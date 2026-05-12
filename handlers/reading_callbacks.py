@@ -1,6 +1,7 @@
 # Файл: handlers/reading_callbacks.py
 
 import logging
+from contextlib import suppress
 
 from aiogram import F, Router, types
 
@@ -26,10 +27,7 @@ from services.reading_session_store import (
     try_start_generation,
 )
 from services.tts import generate_voice
-from services.usage_limits_service import (
-    can_generate_summary,
-    record_summary_generated,
-)
+from services.usage_limits_service import reserve_summary_generation
 from services.user_settings_service import get_effective_user_settings
 from services.voice_selector import select_voice_for_text
 from services.voice_sender import send_voice_files
@@ -91,9 +89,6 @@ async def _safe_edit_reply_markup(
 async def process_read_next(callback: types.CallbackQuery) -> None:
     """
     Обробляє кнопку «Слухати далі».
-
-    P1-виправлення:
-    try_start_generation() атомарно перевіряє і виставляє is_generating=True.
     """
     user_id = callback.from_user.id
     _, callback_session_id = parse_reading_callback(callback.data)
@@ -137,7 +132,8 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
 
     except Exception:
         logger.exception(
-            "ReadingCallbacks: помилка під час надсилання наступної частини user_id=%s",
+            "ReadingCallbacks: помилка під час надсилання наступної "
+            "частини user_id=%s",
             user_id,
         )
 
@@ -175,13 +171,6 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         )
         return
 
-    if not await can_generate_summary(user_id):
-        await callback.answer(
-            SUMMARY_LIMIT_REACHED_TEXT,
-            show_alert=True,
-        )
-        return
-
     if not await try_start_generation(user_id):
         await callback.answer(
             WAIT_PROCESSING_TEXT,
@@ -189,24 +178,32 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         )
         return
 
-    await callback.answer()
-    await _safe_edit_reply_markup(callback, reply_markup=None)
-
     status_msg = None
+    callback_answered = False
 
     try:
         if not callback.message:
+            await callback.answer(
+                SESSION_NOT_FOUND_TEXT,
+                show_alert=True,
+            )
+            callback_answered = True
+
             logger.warning(
-                "ReadingCallbacks: callback.message відсутній для summary user_id=%s",
+                "ReadingCallbacks: callback.message відсутній для summary "
+                "user_id=%s",
                 user_id,
             )
             return
 
-        status_msg = await callback.message.answer(SUMMARY_PREPARING_TEXT)
-
         chunks = session.get("chunks") or []
 
         if not chunks:
+            await callback.answer()
+            callback_answered = True
+
+            status_msg = await callback.message.answer(SUMMARY_PREPARING_TEXT)
+
             await reply_with_voice(
                 callback.message,
                 user_id,
@@ -214,6 +211,21 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
                 status_msg,
             )
             return
+
+        if not await reserve_summary_generation(user_id):
+            await callback.answer(
+                SUMMARY_LIMIT_REACHED_TEXT,
+                show_alert=True,
+            )
+            callback_answered = True
+            return
+
+        await callback.answer()
+        callback_answered = True
+
+        await _safe_edit_reply_markup(callback, reply_markup=None)
+
+        status_msg = await callback.message.answer(SUMMARY_PREPARING_TEXT)
 
         full_text = "\n\n".join(chunks)
         summary_text = await summarize_text_with_ai(full_text)
@@ -227,8 +239,6 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             )
             return
 
-        await record_summary_generated(user_id)
-
         voice_pref, rate = await get_effective_user_settings(user_id)
         voice = select_voice_for_text(summary_text, voice_pref)
 
@@ -240,9 +250,11 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
 
         if not audio_files:
             logger.warning(
-                "ReadingCallbacks: TTS не створив summary audio для user_id=%s",
+                "ReadingCallbacks: TTS не створив summary audio "
+                "для user_id=%s",
                 user_id,
             )
+
             await reply_with_voice(
                 callback.message,
                 user_id,
@@ -274,6 +286,13 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             "ReadingCallbacks: помилка генерації короткого змісту user_id=%s",
             user_id,
         )
+
+        if not callback_answered:
+            with suppress(Exception):
+                await callback.answer(
+                    SUMMARY_GENERATION_ERROR,
+                    show_alert=True,
+                )
 
         if callback.message:
             await reply_with_voice(
@@ -307,6 +326,7 @@ async def process_read_stop(callback: types.CallbackQuery) -> None:
 
     await cleanup_session(user_id)
     await _safe_edit_reply_markup(callback, reply_markup=None)
+
     await callback.answer(READING_STOPPED_ALERT_TEXT)
 
     if callback.message:

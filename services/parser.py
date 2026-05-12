@@ -6,7 +6,7 @@ import logging
 import re
 import socket
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -17,7 +17,6 @@ from config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 
-
 # ============================================================
 # НАЛАШТУВАННЯ
 # ============================================================
@@ -26,6 +25,7 @@ REQUEST_TIMEOUT = 20
 MAX_HTML_BYTES = 2_000_000
 MAX_RAW_TEXT_FOR_AI = 30_000
 MIN_ARTICLE_LENGTH = 50
+MAX_REDIRECTS = 5
 
 AI_MODEL = "gemini-3.1-flash-lite-preview"
 
@@ -35,9 +35,14 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "text/plain;q=0.8,*/*;q=0.7"
+    ),
     "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8,ru;q=0.7",
 }
+
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 # ============================================================
@@ -61,18 +66,17 @@ _http_session: Optional[aiohttp.ClientSession] = None
 async def get_http_session() -> aiohttp.ClientSession:
     """
     Повертає глобальну aiohttp-сесію.
+
     Якщо її ще немає або вона закрита — створює нову.
     """
     global _http_session
 
     if _http_session is None or _http_session.closed:
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-
         _http_session = aiohttp.ClientSession(
             headers=HEADERS,
             timeout=timeout,
         )
-
         logger.info("Створено нову глобальну aiohttp-сесію.")
 
     return _http_session
@@ -221,6 +225,31 @@ async def _is_safe_url_for_request(url: str) -> bool:
     return True
 
 
+async def _is_valid_and_safe_url(url: str) -> bool:
+    """
+    Перевіряє URL повністю:
+    - формат;
+    - схема;
+    - відсутність login/password;
+    - відсутність приватних/локальних IP.
+    """
+    if not _is_valid_url(url):
+        return False
+
+    return await _is_safe_url_for_request(url)
+
+
+def _build_redirect_url(base_url: str, location: str) -> str:
+    """
+    Створює абсолютний URL для redirect Location.
+
+    Location може бути:
+    - абсолютним: https://example.com/new
+    - відносним: /new
+    """
+    return urljoin(base_url, location.strip())
+
+
 # ============================================================
 # TEXT CLEANING
 # ============================================================
@@ -273,8 +302,12 @@ def _strip_ai_output(text: str) -> str:
         return ""
 
     text = text.strip()
-
-    text = re.sub(r"^```(?:text|html|markdown)?", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(
+        r"^```(?:text|html|markdown)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
     text = re.sub(r"```$", "", text).strip()
 
     bad_prefixes = [
@@ -313,16 +346,17 @@ async def _extract_with_ai(raw_text: str) -> Optional[str]:
 
     prompt = f"""
 Ти — інклюзивний інструмент доступності для незрячих користувачів.
-
 Твоє завдання — витягнути з тексту сторінки тільки основний зміст статті або новини.
 
 Правила:
 1. Поверни тільки чистий текст статті.
 2. Залиш заголовок, автора, дату, основні абзаци, якщо вони є.
-3. Видали меню, рекламу, cookie-повідомлення, навігацію, коментарі, блоки "Читайте також", кнопки поширення, підписки та службовий текст.
+3. Видали меню, рекламу, cookie-повідомлення, навігацію, коментарі,
+   блоки "Читайте також", кнопки поширення, підписки та службовий текст.
 4. Не додавай власних пояснень.
 5. Не використовуй Markdown.
-6. Якщо текст не схожий на статтю або новину, все одно спробуй повернути головний корисний текст сторінки.
+6. Якщо текст не схожий на статтю або новину, все одно спробуй повернути
+   головний корисний текст сторінки.
 
 ТЕКСТ СТОРІНКИ:
 {raw_text}
@@ -356,9 +390,33 @@ async def _extract_with_ai(raw_text: str) -> Optional[str]:
 ARTICLE_SELECTORS = [
     ("article", {}),
     ("main", {}),
-    ("div", {"class": re.compile(r"(article|post|entry|content|news|story|text|body)", re.I)}),
-    ("section", {"class": re.compile(r"(article|post|entry|content|news|story|text|body)", re.I)}),
-    ("div", {"id": re.compile(r"(article|post|entry|content|news|story|text|body)", re.I)}),
+    (
+        "div",
+        {
+            "class": re.compile(
+                r"(article|post|entry|content|news|story|text|body)",
+                re.I,
+            )
+        },
+    ),
+    (
+        "section",
+        {
+            "class": re.compile(
+                r"(article|post|entry|content|news|story|text|body)",
+                re.I,
+            )
+        },
+    ),
+    (
+        "div",
+        {
+            "id": re.compile(
+                r"(article|post|entry|content|news|story|text|body)",
+                re.I,
+            )
+        },
+    ),
 ]
 
 JUNK_SELECTORS = [
@@ -532,7 +590,6 @@ def _remove_junk_tags(soup: BeautifulSoup) -> None:
 
     for tag in soup.find_all():
         attrs = getattr(tag, "attrs", {}) or {}
-
         classes = attrs.get("class", [])
         tag_id = attrs.get("id", "")
 
@@ -545,7 +602,16 @@ def _remove_junk_tags(soup: BeautifulSoup) -> None:
             continue
 
         # Не видаляємо потенційно корисні контейнери статті.
-        if any(keep in combined for keep in ["article", "post-content", "entry-content", "article-text", "news-text"]):
+        if any(
+            keep in combined
+            for keep in [
+                "article",
+                "post-content",
+                "entry-content",
+                "article-text",
+                "news-text",
+            ]
+        ):
             continue
 
         if any(junk in combined for junk in JUNK_SELECTORS):
@@ -560,7 +626,11 @@ def _remove_junk_tags(soup: BeautifulSoup) -> None:
         if any(phrase in text for phrase in STOP_PHRASES):
             parent = node.parent
 
-            if parent and parent.name in ["p", "div", "li", "span"] and len(parent.get_text(" ", strip=True)) < 350:
+            if (
+                parent
+                and parent.name in ["p", "div", "li", "span"]
+                and len(parent.get_text(" ", strip=True)) < 350
+            ):
                 parent.decompose()
 
 
@@ -588,7 +658,6 @@ def _collect_text_from_container(container) -> str:
 def _fallback_parse(soup: BeautifulSoup) -> str:
     """
     Класичний fallback-парсер через BeautifulSoup.
-
     Використовується, якщо AI не спрацював.
     """
     title = _extract_title(soup)
@@ -621,7 +690,6 @@ def _fallback_parse(soup: BeautifulSoup) -> str:
 
     if not main_text or len(main_text) < 150:
         paragraphs = soup.find_all("p")
-
         valid_paragraphs = []
 
         for paragraph in paragraphs:
@@ -661,7 +729,8 @@ def _fallback_parse(soup: BeautifulSoup) -> str:
 
 async def _read_limited_response(resp: aiohttp.ClientResponse) -> str:
     """
-    Читає відповідь частинами, щоб не завантажити надто велику сторінку в пам'ять.
+    Читає відповідь частинами, щоб не завантажити надто велику сторінку
+    в пам'ять.
     """
     chunks = []
     total_size = 0
@@ -675,7 +744,6 @@ async def _read_limited_response(resp: aiohttp.ClientResponse) -> str:
         chunks.append(chunk)
 
     raw = b"".join(chunks)
-
     charset = resp.charset or "utf-8"
 
     try:
@@ -684,31 +752,92 @@ async def _read_limited_response(resp: aiohttp.ClientResponse) -> str:
         return raw.decode("utf-8", errors="ignore")
 
 
+def _is_supported_content_type(content_type: str) -> bool:
+    """
+    Перевіряє, чи можна читати відповідь як HTML/XML/TXT.
+    """
+    if not content_type:
+        return True
+
+    content_type = content_type.lower()
+
+    allowed_content_types = [
+        "text/html",
+        "text/plain",
+        "application/xhtml+xml",
+        "application/xml",
+    ]
+
+    return any(item in content_type for item in allowed_content_types)
+
+
 async def _load_html(url: str) -> str | None:
     """
     Завантажує HTML сторінки.
+
+    Редиректи обробляються вручну, щоб кожний наступний URL
+    проходив перевірку безпеки перед запитом.
     """
     session = await get_http_session()
+    current_url = url
 
-    async with session.get(url, allow_redirects=True) as resp:
-        if resp.status >= 400:
-            logger.warning("Сторінка повернула HTTP %s для URL %s", resp.status, url)
+    for redirect_number in range(MAX_REDIRECTS + 1):
+        if not await _is_valid_and_safe_url(current_url):
+            logger.warning(
+                "Небезпечний або некоректний URL під час redirect-перевірки: %s",
+                current_url,
+            )
             return None
 
-        content_type = resp.headers.get("Content-Type", "").lower()
+        async with session.get(
+            current_url,
+            allow_redirects=False,
+        ) as resp:
+            if resp.status in REDIRECT_STATUS_CODES:
+                location = resp.headers.get("Location")
 
-        allowed_content_types = [
-            "text/html",
-            "text/plain",
-            "application/xhtml+xml",
-            "application/xml",
-        ]
+                if not location:
+                    logger.warning(
+                        "Redirect без Location для URL %s",
+                        current_url,
+                    )
+                    return None
 
-        if content_type and not any(item in content_type for item in allowed_content_types):
-            logger.warning("Непідтримуваний Content-Type %s для URL %s", content_type, url)
-            return None
+                if redirect_number >= MAX_REDIRECTS:
+                    raise ValueError("Забагато редиректів.")
 
-        return await _read_limited_response(resp)
+                next_url = _build_redirect_url(str(resp.url), location)
+
+                logger.info(
+                    "Redirect %s -> %s",
+                    current_url,
+                    next_url,
+                )
+
+                current_url = next_url
+                continue
+
+            if resp.status >= 400:
+                logger.warning(
+                    "Сторінка повернула HTTP %s для URL %s",
+                    resp.status,
+                    current_url,
+                )
+                return None
+
+            content_type = resp.headers.get("Content-Type", "")
+
+            if not _is_supported_content_type(content_type):
+                logger.warning(
+                    "Непідтримуваний Content-Type %s для URL %s",
+                    content_type,
+                    current_url,
+                )
+                return None
+
+            return await _read_limited_response(resp)
+
+    raise ValueError("Забагато редиректів.")
 
 
 # ============================================================
@@ -753,7 +882,6 @@ async def parse_article(url: str) -> str:
         return "❌ Помилка завантаження сторінки."
 
     soup = BeautifulSoup(html, "html.parser")
-
     raw_soup = BeautifulSoup(html, "html.parser")
 
     for element in raw_soup(
@@ -804,7 +932,6 @@ async def summarize_text_with_ai(text: str) -> str:
 
     prompt = f"""
 Ти — інструмент доступності для незрячих користувачів.
-
 Зроби дуже стислий, але інформативний переказ тексту.
 Максимум 3-4 речення.
 Передай тільки головну суть.

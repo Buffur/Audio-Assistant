@@ -9,15 +9,31 @@ from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
+DB_TIMEOUT_SECONDS = 10
+DB_BUSY_TIMEOUT_MS = DB_TIMEOUT_SECONDS * 1000
+
+ALLOWED_USAGE_FIELDS = {
+    "text_messages_processed",
+    "files_processed",
+    "ocr_processed",
+    "links_processed",
+    "summaries_generated",
+}
+
 
 def get_db_connection() -> aiosqlite.Connection:
-    return aiosqlite.connect(DB_PATH)
+    return aiosqlite.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS)
+
+
+async def _configure_sqlite(db: aiosqlite.Connection) -> None:
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
 
 
 async def _column_exists(
     db: aiosqlite.Connection,
     table_name: str,
-    column_name: str
+    column_name: str,
 ) -> bool:
     async with db.execute(f"PRAGMA table_info({table_name})") as cursor:
         columns = await cursor.fetchall()
@@ -27,6 +43,8 @@ async def _column_exists(
 
 async def init_db() -> None:
     async with get_db_connection() as db:
+        await _configure_sqlite(db)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -109,7 +127,7 @@ async def init_db() -> None:
             if not await _column_exists(db, "usage_daily", column_name):
                 logger.info(
                     "DB migration: додаю колонку usage_daily.%s",
-                    column_name
+                    column_name,
                 )
                 await db.execute(
                     f"ALTER TABLE usage_daily ADD COLUMN {column_name} {column_type}"
@@ -119,10 +137,11 @@ async def init_db() -> None:
 
     logger.info("Базу даних ініціалізовано: %s", DB_PATH)
 
+
 async def register_or_update_user(
     user_id: int,
     username: str,
-    full_name: str
+    full_name: str,
 ) -> None:
     async with get_db_connection() as db:
         await db.execute("""
@@ -133,7 +152,6 @@ async def register_or_update_user(
                 full_name = excluded.full_name,
                 last_activity = CURRENT_TIMESTAMP
         """, (user_id, username, full_name))
-
         await db.commit()
 
 
@@ -141,7 +159,7 @@ async def get_user_settings(user_id: int) -> tuple[str | None, str | None]:
     async with get_db_connection() as db:
         async with db.execute(
             "SELECT voice, rate FROM users WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -154,12 +172,12 @@ async def get_user_settings(user_id: int) -> tuple[str | None, str | None]:
 async def set_user_settings(
     user_id: int,
     voice: str | None = None,
-    rate: str | None = None
+    rate: str | None = None,
 ) -> None:
     if voice is None and rate is None:
         logger.warning(
             "set_user_settings викликано без voice/rate для user_id=%s",
-            user_id
+            user_id,
         )
         return
 
@@ -180,9 +198,8 @@ async def set_user_settings(
                 rate = COALESCE(excluded.rate, users.rate),
                 last_activity = CURRENT_TIMESTAMP
             """,
-            (user_id, voice, rate)
+            (user_id, voice, rate),
         )
-
         await db.commit()
 
 
@@ -227,9 +244,8 @@ async def ban_user(user_id: int) -> None:
             SET is_banned = 1, last_activity = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
-            (user_id,)
+            (user_id,),
         )
-
         await db.commit()
 
     logger.info("Користувача заблоковано: user_id=%s", user_id)
@@ -243,9 +259,8 @@ async def unban_user(user_id: int) -> None:
             SET is_banned = 0, last_activity = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
-            (user_id,)
+            (user_id,),
         )
-
         await db.commit()
 
     logger.info("Користувача розблоковано: user_id=%s", user_id)
@@ -255,7 +270,7 @@ async def is_user_banned(user_id: int) -> bool:
     async with get_db_connection() as db:
         async with db.execute(
             "SELECT is_banned FROM users WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -264,7 +279,7 @@ async def is_user_banned(user_id: int) -> bool:
 
 async def set_user_premium(
     user_id: int,
-    premium_until: str | None
+    premium_until: str | None,
 ) -> None:
     """
     Видає користувачу premium.
@@ -283,9 +298,8 @@ async def set_user_premium(
                 premium_until = excluded.premium_until,
                 last_activity = CURRENT_TIMESTAMP
             """,
-            (user_id, premium_until)
+            (user_id, premium_until),
         )
-
         await db.commit()
 
 
@@ -297,14 +311,14 @@ async def revoke_user_premium(user_id: int) -> None:
         await db.execute(
             """
             UPDATE users
-            SET plan = 'free',
+            SET
+                plan = 'free',
                 premium_until = NULL,
                 last_activity = CURRENT_TIMESTAMP
             WHERE user_id = ?
             """,
-            (user_id,)
+            (user_id,),
         )
-
         await db.commit()
 
 
@@ -319,7 +333,7 @@ async def get_user_plan_info(user_id: int) -> dict[str, Any]:
             FROM users
             WHERE user_id = ?
             """,
-            (user_id,)
+            (user_id,),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -338,7 +352,7 @@ async def get_user_plan_info(user_id: int) -> dict[str, Any]:
 async def _ensure_usage_row(
     db: aiosqlite.Connection,
     user_id: int,
-    usage_date: str
+    usage_date: str,
 ) -> None:
     await db.execute(
         """
@@ -353,13 +367,13 @@ async def _ensure_usage_row(
         )
         VALUES (?, ?, 0, 0, 0, 0, 0)
         """,
-        (user_id, usage_date)
+        (user_id, usage_date),
     )
 
 
 async def get_daily_usage(
     user_id: int,
-    usage_date: str
+    usage_date: str,
 ) -> dict[str, int]:
     async with get_db_connection() as db:
         await _ensure_usage_row(db, user_id, usage_date)
@@ -376,7 +390,7 @@ async def get_daily_usage(
             FROM usage_daily
             WHERE user_id = ? AND usage_date = ?
             """,
-            (user_id, usage_date)
+            (user_id, usage_date),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -402,32 +416,84 @@ async def increment_daily_usage(
     user_id: int,
     usage_date: str,
     field_name: str,
-    amount: int = 1
+    amount: int = 1,
 ) -> None:
-    allowed_fields = {
-        "text_messages_processed",
-        "files_processed",
-        "ocr_processed",
-        "links_processed",
-        "summaries_generated",
-    }
-
-    if field_name not in allowed_fields:
+    if field_name not in ALLOWED_USAGE_FIELDS:
         raise ValueError(f"Unsupported usage field: {field_name}")
+
+    if amount <= 0:
+        raise ValueError("Usage increment amount must be greater than 0")
 
     async with get_db_connection() as db:
         await _ensure_usage_row(db, user_id, usage_date)
-
         await db.execute(
             f"""
             UPDATE usage_daily
             SET {field_name} = {field_name} + ?
             WHERE user_id = ? AND usage_date = ?
             """,
-            (amount, user_id, usage_date)
+            (amount, user_id, usage_date),
         )
-
         await db.commit()
+
+
+async def try_increment_daily_usage_under_limit(
+    user_id: int,
+    usage_date: str,
+    field_name: str,
+    limit: int | None,
+    amount: int = 1,
+) -> bool:
+    """
+    Атомарно збільшує usage тільки якщо ліміт ще не вичерпано.
+
+    Повертає:
+    - True, якщо usage успішно збільшено;
+    - False, якщо користувач уже досяг ліміту.
+    """
+    if field_name not in ALLOWED_USAGE_FIELDS:
+        raise ValueError(f"Unsupported usage field: {field_name}")
+
+    if amount <= 0:
+        raise ValueError("Usage increment amount must be greater than 0")
+
+    async with get_db_connection() as db:
+        await db.execute("BEGIN IMMEDIATE")
+
+        try:
+            await _ensure_usage_row(db, user_id, usage_date)
+
+            async with db.execute(
+                f"""
+                SELECT {field_name}
+                FROM usage_daily
+                WHERE user_id = ? AND usage_date = ?
+                """,
+                (user_id, usage_date),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            current_value = int(row[0]) if row else 0
+
+            if limit is not None and current_value + amount > limit:
+                await db.rollback()
+                return False
+
+            await db.execute(
+                f"""
+                UPDATE usage_daily
+                SET {field_name} = {field_name} + ?
+                WHERE user_id = ? AND usage_date = ?
+                """,
+                (amount, user_id, usage_date),
+            )
+
+            await db.commit()
+            return True
+
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def add_document_history(
@@ -437,7 +503,7 @@ async def add_document_history(
     text_preview: str,
     text_length: int,
     chunks_count: int,
-    chunks_json: str | None = None
+    chunks_json: str | None = None,
 ) -> int:
     async with get_db_connection() as db:
         cursor = await db.execute(
@@ -461,17 +527,16 @@ async def add_document_history(
                 text_length,
                 chunks_count,
                 chunks_json,
-            )
+            ),
         )
-
         await db.commit()
 
-        return int(cursor.lastrowid)
+    return int(cursor.lastrowid)
 
 
 async def get_user_document_history(
     user_id: int,
-    limit: int = 10
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
     async with get_db_connection() as db:
         async with db.execute(
@@ -490,7 +555,7 @@ async def get_user_document_history(
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (user_id, limit)
+            (user_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -511,7 +576,7 @@ async def get_user_document_history(
 
 async def get_user_document_by_id(
     user_id: int,
-    document_id: int
+    document_id: int,
 ) -> dict[str, Any] | None:
     async with get_db_connection() as db:
         async with db.execute(
@@ -528,7 +593,7 @@ async def get_user_document_by_id(
             FROM document_history
             WHERE user_id = ? AND id = ?
             """,
-            (user_id, document_id)
+            (user_id, document_id),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -549,7 +614,7 @@ async def get_user_document_by_id(
 
 async def delete_user_document(
     user_id: int,
-    document_id: int
+    document_id: int,
 ) -> None:
     async with get_db_connection() as db:
         await db.execute(
@@ -557,9 +622,8 @@ async def delete_user_document(
             DELETE FROM document_history
             WHERE user_id = ? AND id = ?
             """,
-            (user_id, document_id)
+            (user_id, document_id),
         )
-
         await db.commit()
 
 
@@ -567,7 +631,6 @@ async def clear_user_document_history(user_id: int) -> None:
     async with get_db_connection() as db:
         await db.execute(
             "DELETE FROM document_history WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         )
-
         await db.commit()

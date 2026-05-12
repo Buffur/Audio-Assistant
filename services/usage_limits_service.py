@@ -18,6 +18,7 @@ from database.db import (
     increment_daily_usage,
     revoke_user_premium,
     set_user_premium,
+    try_increment_daily_usage_under_limit,
 )
 
 USAGE_TYPE_TEXT = "text"
@@ -58,7 +59,6 @@ def _is_image_document(message: types.Message) -> bool:
         return False
 
     mime_type = message.document.mime_type or ""
-
     return mime_type.startswith("image/")
 
 
@@ -100,6 +100,25 @@ def _usage_field_for_type(usage_type: str) -> str:
         return USAGE_FIELD_LINKS
 
     return USAGE_FIELD_TEXT_MESSAGES
+
+
+def _usage_limit_for_type(
+    usage_type: str,
+    limits: dict[str, int | None],
+) -> int | None:
+    if usage_type == USAGE_TYPE_TEXT:
+        return limits["text_messages_limit"]
+
+    if usage_type == USAGE_TYPE_FILE:
+        return limits["files_limit"]
+
+    if usage_type == USAGE_TYPE_OCR:
+        return limits["ocr_limit"]
+
+    if usage_type == USAGE_TYPE_LINK:
+        return limits["links_limit"]
+
+    return limits["text_messages_limit"]
 
 
 async def is_premium_user(user_id: int) -> bool:
@@ -178,43 +197,49 @@ def _is_under_limit(current_value: int, limit: int | None) -> bool:
 
 async def can_process_input(
     user_id: int,
-    usage_type: str
+    usage_type: str,
 ) -> bool:
+    """
+    Тільки перевіряє ліміт без списання.
+
+    Для реальної обробки повідомлень краще використовувати
+    reserve_input_processing(), щоб перевірка і списання були одним кроком.
+    """
     status = await get_user_usage_status(user_id)
 
     if usage_type == USAGE_TYPE_TEXT:
         return _is_under_limit(
             status["text_messages_processed"],
-            status["text_messages_limit"]
+            status["text_messages_limit"],
         )
 
     if usage_type == USAGE_TYPE_FILE:
         return _is_under_limit(
             status["files_processed"],
-            status["files_limit"]
+            status["files_limit"],
         )
 
     if usage_type == USAGE_TYPE_OCR:
         return _is_under_limit(
             status["ocr_processed"],
-            status["ocr_limit"]
+            status["ocr_limit"],
         )
 
     if usage_type == USAGE_TYPE_LINK:
         return _is_under_limit(
             status["links_processed"],
-            status["links_limit"]
+            status["links_limit"],
         )
 
     return _is_under_limit(
         status["text_messages_processed"],
-        status["text_messages_limit"]
+        status["text_messages_limit"],
     )
 
 
 async def record_input_processed(
     user_id: int,
-    usage_type: str
+    usage_type: str,
 ) -> None:
     await increment_daily_usage(
         user_id=user_id,
@@ -223,12 +248,57 @@ async def record_input_processed(
     )
 
 
+async def reserve_input_processing(
+    user_id: int,
+    usage_type: str,
+) -> bool:
+    """
+    Резервує денний ліміт перед важкою обробкою.
+
+    Для free-користувачів:
+    - атомарно перевіряє ліміт;
+    - якщо ліміт ще є — одразу списує 1 використання;
+    - якщо ліміт вичерпано — повертає False.
+
+    Для premium/admin:
+    - ліміт безмежний;
+    - usage все одно записується для статистики.
+    """
+    usage_date = _today_key()
+    usage_field = _usage_field_for_type(usage_type)
+    premium = await is_premium_user(user_id)
+
+    if premium:
+        await increment_daily_usage(
+            user_id=user_id,
+            usage_date=usage_date,
+            field_name=usage_field,
+        )
+        return True
+
+    limits = _get_limits_for_plan(is_premium=False)
+    limit = _usage_limit_for_type(usage_type, limits)
+
+    return await try_increment_daily_usage_under_limit(
+        user_id=user_id,
+        usage_date=usage_date,
+        field_name=usage_field,
+        limit=limit,
+    )
+
+
 async def can_generate_summary(user_id: int) -> bool:
+    """
+    Тільки перевіряє summary-ліміт без списання.
+
+    Для реальної генерації короткого змісту краще використовувати
+    reserve_summary_generation().
+    """
     status = await get_user_usage_status(user_id)
 
     return _is_under_limit(
         status["summaries_generated"],
-        status["summaries_limit"]
+        status["summaries_limit"],
     )
 
 
@@ -237,6 +307,41 @@ async def record_summary_generated(user_id: int) -> None:
         user_id=user_id,
         usage_date=_today_key(),
         field_name=USAGE_FIELD_SUMMARIES,
+    )
+
+
+async def reserve_summary_generation(user_id: int) -> bool:
+    """
+    Резервує денний summary-ліміт перед AI/TTS генерацією.
+
+    Для free-користувачів:
+    - атомарно перевіряє summaries_generated;
+    - якщо ліміт ще є — одразу списує 1 використання;
+    - якщо ліміт вичерпано — повертає False.
+
+    Для premium/admin:
+    - ліміт безмежний;
+    - usage все одно записується для статистики.
+    """
+    usage_date = _today_key()
+    premium = await is_premium_user(user_id)
+
+    if premium:
+        await increment_daily_usage(
+            user_id=user_id,
+            usage_date=usage_date,
+            field_name=USAGE_FIELD_SUMMARIES,
+        )
+        return True
+
+    limits = _get_limits_for_plan(is_premium=False)
+    limit = limits["summaries_limit"]
+
+    return await try_increment_daily_usage_under_limit(
+        user_id=user_id,
+        usage_date=usage_date,
+        field_name=USAGE_FIELD_SUMMARIES,
+        limit=limit,
     )
 
 
@@ -250,7 +355,7 @@ async def grant_premium(user_id: int, days: int | None = None) -> str | None:
 
     await set_user_premium(
         user_id=user_id,
-        premium_until=premium_until_text
+        premium_until=premium_until_text,
     )
 
     return premium_until_text

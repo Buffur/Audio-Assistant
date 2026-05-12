@@ -1,34 +1,60 @@
 # Файл: .dockerignore
 
-.venv/
-venv/
-env/
-
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
+# Git
 .git/
 .gitignore
 
+# Environment variables and secrets
 .env
 .env.local
 .env.*.local
 
-bot_database.sqlite
-*.sqlite
-*.sqlite3
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
 
-data/
-logs/
-*.log
-
+# Test / lint / type-check cache
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+bot_database.sqlite
+users.db
+
+# Runtime data
+data/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker / local compose files
+docker-compose.yml
+docker-compose.override.yml
+
+# OS / IDE
+.DS_Store
 .idea/
 .vscode/
 
+# Project files not required inside production image
 README.md
+tests/

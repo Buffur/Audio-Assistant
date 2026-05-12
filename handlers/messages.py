@@ -1,5 +1,6 @@
 # Файл: handlers/messages.py
 
+import asyncio
 import logging
 import uuid
 
@@ -19,9 +20,8 @@ from services.reading_session_store import (
     set_reading_session_generating,
 )
 from services.usage_limits_service import (
-    can_process_input,
     detect_input_usage_type,
-    record_input_processed,
+    reserve_input_processing,
 )
 from texts.limits import get_limit_reached_text
 from texts.messages import (
@@ -40,6 +40,38 @@ logger = logging.getLogger(__name__)
 
 MAX_EXTRACTED_TEXT_LENGTH = 60000
 
+_user_processing_locks: dict[int, asyncio.Lock] = {}
+_user_processing_lock_usage: dict[int, int] = {}
+
+
+def _reserve_user_processing_lock(user_id: int) -> asyncio.Lock:
+    lock = _user_processing_locks.get(user_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_processing_locks[user_id] = lock
+
+    _user_processing_lock_usage[user_id] = (
+        _user_processing_lock_usage.get(user_id, 0) + 1
+    )
+
+    return lock
+
+
+def _release_user_processing_lock(user_id: int) -> None:
+    usage_count = _user_processing_lock_usage.get(user_id, 0) - 1
+
+    if usage_count > 0:
+        _user_processing_lock_usage[user_id] = usage_count
+        return
+
+    _user_processing_lock_usage.pop(user_id, None)
+
+    lock = _user_processing_locks.get(user_id)
+
+    if lock is not None and not lock.locked():
+        _user_processing_locks.pop(user_id, None)
+
 
 def _limit_extracted_text(text: str) -> tuple[str, bool]:
     if len(text) <= MAX_EXTRACTED_TEXT_LENGTH:
@@ -52,10 +84,7 @@ def _generate_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-@router.message()
-async def handle_message(message: types.Message) -> None:
-    user_id = message.from_user.id
-
+async def _process_message(message: types.Message, user_id: int) -> None:
     await cleanup_session(user_id)
 
     if message.text and message.text.startswith("/"):
@@ -64,7 +93,7 @@ async def handle_message(message: types.Message) -> None:
 
     usage_type = detect_input_usage_type(message)
 
-    if not await can_process_input(user_id, usage_type):
+    if not await reserve_input_processing(user_id, usage_type):
         await message.answer(get_limit_reached_text(usage_type))
         return
 
@@ -72,7 +101,7 @@ async def handle_message(message: types.Message) -> None:
 
     text = await extract_text_from_message(
         message=message,
-        status_msg=status_msg
+        status_msg=status_msg,
     )
 
     if not text or not text.strip() or is_error_text(text):
@@ -92,13 +121,13 @@ async def handle_message(message: types.Message) -> None:
     if not chunks:
         logger.warning(
             "Messages: split_text повернув порожній список для user_id=%s",
-            user_id
+            user_id,
         )
         await reply_with_voice(
             message,
             user_id,
             TEXT_SPLIT_ERROR,
-            status_msg
+            status_msg,
         )
         return
 
@@ -106,10 +135,8 @@ async def handle_message(message: types.Message) -> None:
         user_id=user_id,
         message=message,
         text=text,
-        chunks=chunks
+        chunks=chunks,
     )
-
-    await record_input_processed(user_id, usage_type)
 
     await set_reading_session(
         user_id=user_id,
@@ -119,7 +146,7 @@ async def handle_message(message: types.Message) -> None:
             "index": 0,
             "is_generating": True,
             "prefetch_task": None,
-        }
+        },
     )
 
     if len(chunks) > 1:
@@ -127,14 +154,34 @@ async def handle_message(message: types.Message) -> None:
             message,
             user_id,
             build_large_text_split_text(len(chunks)),
-            status_msg
+            status_msg,
         )
     else:
         await safe_delete_message(status_msg)
 
     try:
         await send_audio_chunk(message, user_id)
-
     finally:
         if await has_reading_session(user_id):
             await set_reading_session_generating(user_id, False)
+
+
+@router.message()
+async def handle_message(message: types.Message) -> None:
+    if message.from_user is None:
+        logger.warning(
+            "Messages: отримано повідомлення без from_user. "
+            "message_id=%s, chat_id=%s",
+            message.message_id,
+            getattr(message.chat, "id", None),
+        )
+        return
+
+    user_id = message.from_user.id
+    lock = _reserve_user_processing_lock(user_id)
+
+    try:
+        async with lock:
+            await _process_message(message, user_id)
+    finally:
+        _release_user_processing_lock(user_id)

@@ -1,0 +1,5 @@
+# Файл: requirements-dev.txt
+
+pytest
+pytest-asyncio
+pip-tools

@@ -1,11 +1,35 @@
+# Файл: requirements.txt
+
+# Telegram bot framework
 aiogram
+
+# Async database and HTTP
 aiosqlite
 aiohttp
+
+# HTML parsing
 beautifulsoup4
+
+# Text-to-speech
 edge-tts
+
+# Text language detection
 langdetect
+
+# Image processing and OCR-related support
 pillow
+
+# PDF processing
 PyMuPDF
+
+# DOCX processing
 python-docx
+
+# Google Gemini API
 google-genai
+
+# Cache / rate limit storage
 redis
+
+# Application settings and .env validation
+pydantic-settings
