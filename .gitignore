@@ -5,24 +5,33 @@
 .env.local
 .env.*.local
 
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+
+# Test / lint / type-check cache
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 venv/
 .venv/
 env/
 
-# Database
+# Databases
+*.db
 *.sqlite
 *.sqlite3
 bot_database.sqlite
+users.db
+
+# Runtime data
+data/
 
 # Logs
 *.log
@@ -37,6 +46,3 @@ temp/
 .DS_Store
 .idea/
 .vscode/
-
-# Runtime data
-data/
