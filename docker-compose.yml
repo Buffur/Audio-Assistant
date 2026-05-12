@@ -1,0 +1,37 @@
+# Файл: docker-compose.yml
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: utos_audio_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    container_name: utos_audio_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DB_PATH: /app/data/bot_database.sqlite
+      AUDIO_CACHE_DIR: /app/data/audio_cache
+      AUDIO_CACHE_ENABLED: "1"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:

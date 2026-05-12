@@ -1,0 +1,11 @@
+aiogram
+aiosqlite
+aiohttp
+beautifulsoup4
+edge-tts
+langdetect
+pillow
+PyMuPDF
+python-docx
+google-genai
+redis

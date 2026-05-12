@@ -1,0 +1,42 @@
+# Файл: .gitignore
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Database
+*.sqlite
+*.sqlite3
+bot_database.sqlite
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime data
+data/
