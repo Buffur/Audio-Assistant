@@ -9,16 +9,22 @@ from aiogram.types import CallbackQuery, Message
 from keyboards.main import SETTINGS_BUTTON_TEXT
 from keyboards.settings import (
     SPEED_CALLBACK_PREFIX,
+    TTS_PROVIDER_CALLBACK_PREFIX,
     VOICE_CALLBACK_PREFIX,
     settings_keyboard,
 )
 from services.tts import generate_voice
 from services.user_settings_service import (
     ALLOWED_SPEEDS,
+    ALLOWED_USER_TTS_PROVIDERS,
+    build_user_tts_provider_chain,
     get_effective_user_settings,
+    get_effective_user_tts_provider,
     get_rate_display,
+    get_tts_provider_display,
     get_voice_display_name,
     update_user_rate,
+    update_user_tts_provider,
     update_user_voice,
 )
 from services.voice_sender import send_voice_files
@@ -26,11 +32,14 @@ from texts.settings import (
     FEMALE_VOICE_CONFIRM_TEXT,
     MALE_VOICE_CONFIRM_TEXT,
     RATE_UPDATE_ERROR_TEXT,
+    TTS_PROVIDER_UPDATE_ERROR_TEXT,
     UNKNOWN_SPEED_OPTION_TEXT,
+    UNKNOWN_TTS_PROVIDER_OPTION_TEXT,
     UNKNOWN_VOICE_OPTION_TEXT,
     VOICE_UPDATE_ERROR_TEXT,
     build_settings_text,
     build_speed_confirm_text,
+    build_tts_provider_confirm_text,
 )
 
 router = Router()
@@ -53,13 +62,16 @@ async def get_settings_text(user_id: int) -> str:
     Генерує актуальний текст повідомлення з налаштуваннями.
     """
     voice, rate = await get_effective_user_settings(user_id)
+    tts_provider = await get_effective_user_tts_provider(user_id)
 
     voice_text = get_voice_display_name(voice)
     rate_text = get_rate_display(rate)
+    tts_provider_text = get_tts_provider_display(tts_provider)
 
     return build_settings_text(
         voice_text=voice_text,
-        rate_text=rate_text
+        rate_text=rate_text,
+        tts_provider_text=tts_provider_text,
     )
 
 
@@ -88,7 +100,8 @@ async def _send_voice_preview(
     callback: CallbackQuery,
     text: str,
     voice: str,
-    rate: str
+    rate: str,
+    tts_provider: str,
 ) -> None:
     """
     Генерує та надсилає голосове прев'ю налаштувань.
@@ -97,7 +110,15 @@ async def _send_voice_preview(
     а помилка потрапляє в логи.
     """
     try:
-        audio_files = await generate_voice(text, voice, rate)
+        audio_files = await generate_voice(
+            text=text,
+            voice=voice,
+            rate=rate,
+            provider_chain=build_user_tts_provider_chain(
+                tts_provider,
+                voice=voice,
+            ),
+        )
 
         if not audio_files:
             logger.warning(
@@ -160,12 +181,14 @@ async def change_voice(callback: CallbackQuery) -> None:
     await _safe_edit_settings_message(callback, user_id)
 
     _, rate = await get_effective_user_settings(user_id)
+    tts_provider = await get_effective_user_tts_provider(user_id)
 
     await _send_voice_preview(
         callback=callback,
         text=text_confirm,
         voice=voice,
-        rate=rate
+        rate=rate,
+        tts_provider=tts_provider,
     )
 
 
@@ -202,10 +225,59 @@ async def change_speed(callback: CallbackQuery) -> None:
     await _safe_edit_settings_message(callback, user_id)
 
     voice, _ = await get_effective_user_settings(user_id)
+    tts_provider = await get_effective_user_tts_provider(user_id)
 
     await _send_voice_preview(
         callback=callback,
         text=text_confirm,
         voice=voice,
-        rate=rate
+        rate=rate,
+        tts_provider=tts_provider,
+    )
+
+
+@router.callback_query(F.data.startswith(TTS_PROVIDER_CALLBACK_PREFIX))
+async def change_tts_provider(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    _, _, tts_provider = callback.data.partition(":")
+
+    if tts_provider not in ALLOWED_USER_TTS_PROVIDERS:
+        logger.warning(
+            "Отримано невідомий TTS provider callback від user_id=%s: %s",
+            user_id,
+            callback.data,
+        )
+        await callback.answer(UNKNOWN_TTS_PROVIDER_OPTION_TEXT, show_alert=True)
+        return
+
+    try:
+        await update_user_tts_provider(
+            user_id=user_id,
+            tts_provider=tts_provider,
+        )
+    except ValueError:
+        logger.exception(
+            "Не вдалося оновити TTS provider для user_id=%s: %s",
+            user_id,
+            tts_provider,
+        )
+        await callback.answer(TTS_PROVIDER_UPDATE_ERROR_TEXT, show_alert=True)
+        return
+
+    effective_tts_provider = await get_effective_user_tts_provider(user_id)
+    display_provider = get_tts_provider_display(effective_tts_provider)
+    text_confirm = build_tts_provider_confirm_text(display_provider)
+
+    await callback.answer(text_confirm)
+
+    await _safe_edit_settings_message(callback, user_id)
+
+    voice, rate = await get_effective_user_settings(user_id)
+
+    await _send_voice_preview(
+        callback=callback,
+        text=text_confirm,
+        voice=voice,
+        rate=rate,
+        tts_provider=effective_tts_provider,
     )

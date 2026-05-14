@@ -5,7 +5,17 @@ services:
     image: redis:7-alpine
     container_name: utos_audio_redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory",
+        "64mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    mem_limit: 128m
     volumes:
       - redis_data:/data
     healthcheck:
@@ -15,9 +25,11 @@ services:
       retries: 10
 
   bot:
-    build: .
+    build:
+      context: .
     container_name: utos_audio_bot
     restart: unless-stopped
+    mem_limit: 1g
     env_file:
       - .env
     environment:
@@ -25,6 +37,7 @@ services:
       DB_PATH: /app/data/bot_database.sqlite
       AUDIO_CACHE_DIR: /app/data/audio_cache
       AUDIO_CACHE_ENABLED: "1"
+      RATE_LIMIT_BACKEND: redis
     volumes:
       - ./data:/app/data
     depends_on:

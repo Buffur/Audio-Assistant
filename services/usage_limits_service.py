@@ -13,10 +13,12 @@ from config import (
     FREE_DAILY_TEXT_MESSAGE_LIMIT,
 )
 from database.db import (
+    get_app_settings,
     get_daily_usage,
     get_user_plan_info,
     increment_daily_usage,
     revoke_user_premium,
+    set_app_setting,
     set_user_premium,
     try_increment_daily_usage_under_limit,
 )
@@ -31,6 +33,28 @@ USAGE_FIELD_FILES = "files_processed"
 USAGE_FIELD_OCR = "ocr_processed"
 USAGE_FIELD_LINKS = "links_processed"
 USAGE_FIELD_SUMMARIES = "summaries_generated"
+
+LIMIT_TEXT_MESSAGES = "text_messages_limit"
+LIMIT_FILES = "files_limit"
+LIMIT_OCR = "ocr_limit"
+LIMIT_LINKS = "links_limit"
+LIMIT_SUMMARIES = "summaries_limit"
+
+LIMIT_SETTING_KEYS = {
+    LIMIT_TEXT_MESSAGES: "limit.text_messages",
+    LIMIT_FILES: "limit.files",
+    LIMIT_OCR: "limit.photos",
+    LIMIT_LINKS: "limit.links",
+    LIMIT_SUMMARIES: "limit.summaries",
+}
+
+DEFAULT_LIMITS = {
+    LIMIT_TEXT_MESSAGES: FREE_DAILY_TEXT_MESSAGE_LIMIT,
+    LIMIT_FILES: FREE_DAILY_FILE_LIMIT,
+    LIMIT_OCR: FREE_DAILY_OCR_LIMIT,
+    LIMIT_LINKS: FREE_DAILY_LINK_LIMIT,
+    LIMIT_SUMMARIES: FREE_DAILY_SUMMARY_LIMIT,
+}
 
 
 def _today_key() -> str:
@@ -156,30 +180,85 @@ async def get_effective_plan_info(user_id: int) -> dict:
     }
 
 
-def _get_limits_for_plan(is_premium: bool) -> dict[str, int | None]:
+def _parse_limit_value(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+
+    try:
+        parsed_value = int(value)
+    except ValueError:
+        return default
+
+    return max(parsed_value, 1)
+
+
+def _validate_limit_name(limit_name: str) -> None:
+    if limit_name not in LIMIT_SETTING_KEYS:
+        raise ValueError(f"Unsupported limit name: {limit_name}")
+
+
+async def get_editable_limits() -> dict[str, int]:
+    settings = await get_app_settings(list(LIMIT_SETTING_KEYS.values()))
+    limits = {}
+
+    for limit_name, setting_key in LIMIT_SETTING_KEYS.items():
+        limits[limit_name] = _parse_limit_value(
+            settings.get(setting_key),
+            DEFAULT_LIMITS[limit_name],
+        )
+
+    return limits
+
+
+async def set_editable_limit(limit_name: str, value: int) -> int:
+    _validate_limit_name(limit_name)
+
+    value = max(int(value), 1)
+
+    await set_app_setting(
+        key=LIMIT_SETTING_KEYS[limit_name],
+        value=str(value),
+    )
+
+    return value
+
+
+async def reset_editable_limit(limit_name: str) -> int:
+    _validate_limit_name(limit_name)
+
+    return await set_editable_limit(
+        limit_name=limit_name,
+        value=DEFAULT_LIMITS[limit_name],
+    )
+
+
+async def adjust_editable_limit(limit_name: str, delta: int) -> int:
+    _validate_limit_name(limit_name)
+
+    limits = await get_editable_limits()
+    new_value = max(limits[limit_name] + delta, 1)
+
+    return await set_editable_limit(limit_name=limit_name, value=new_value)
+
+
+async def get_limits_for_plan(is_premium: bool) -> dict[str, int | None]:
     if is_premium:
         return {
-            "text_messages_limit": None,
-            "files_limit": None,
-            "ocr_limit": None,
-            "links_limit": None,
-            "summaries_limit": None,
+            LIMIT_TEXT_MESSAGES: None,
+            LIMIT_FILES: None,
+            LIMIT_OCR: None,
+            LIMIT_LINKS: None,
+            LIMIT_SUMMARIES: None,
         }
 
-    return {
-        "text_messages_limit": FREE_DAILY_TEXT_MESSAGE_LIMIT,
-        "files_limit": FREE_DAILY_FILE_LIMIT,
-        "ocr_limit": FREE_DAILY_OCR_LIMIT,
-        "links_limit": FREE_DAILY_LINK_LIMIT,
-        "summaries_limit": FREE_DAILY_SUMMARY_LIMIT,
-    }
+    return await get_editable_limits()
 
 
 async def get_user_usage_status(user_id: int) -> dict:
     usage_date = _today_key()
     usage = await get_daily_usage(user_id, usage_date)
     plan_info = await get_effective_plan_info(user_id)
-    limits = _get_limits_for_plan(plan_info["is_premium"])
+    limits = await get_limits_for_plan(plan_info["is_premium"])
 
     return {
         **usage,
@@ -276,7 +355,7 @@ async def reserve_input_processing(
         )
         return True
 
-    limits = _get_limits_for_plan(is_premium=False)
+    limits = await get_limits_for_plan(is_premium=False)
     limit = _usage_limit_for_type(usage_type, limits)
 
     return await try_increment_daily_usage_under_limit(
@@ -334,7 +413,7 @@ async def reserve_summary_generation(user_id: int) -> bool:
         )
         return True
 
-    limits = _get_limits_for_plan(is_premium=False)
+    limits = await get_limits_for_plan(is_premium=False)
     limit = limits["summaries_limit"]
 
     return await try_increment_daily_usage_under_limit(

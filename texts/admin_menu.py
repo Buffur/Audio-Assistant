@@ -1,12 +1,6 @@
 # Файл: texts/admin_menu.py
 
-from config import (
-    FREE_DAILY_FILE_LIMIT,
-    FREE_DAILY_LINK_LIMIT,
-    FREE_DAILY_OCR_LIMIT,
-    FREE_DAILY_SUMMARY_LIMIT,
-    FREE_DAILY_TEXT_MESSAGE_LIMIT,
-)
+import html
 
 ADMIN_ACCESS_DENIED_TEXT = "🚫 У вас немає доступу до адмін-меню."
 
@@ -17,8 +11,9 @@ ADMIN_MENU_TEXT = (
 
 ADMIN_BROADCAST_TEXT = (
     "📢 <b>Розсилка</b>\n\n"
-    "Щоб зробити голосову розсилку всім активним користувачам, використайте команду:\n\n"
+    "Щоб підготувати голосову розсилку всім активним користувачам, використайте команду:\n\n"
     "<code>/broadcast Ваш текст для розсилки</code>\n\n"
+    "Бот покаже preview і попросить підтвердження перед відправленням.\n\n"
     "Приклад:\n"
     "<code>/broadcast Завтра о 10:00 відбудеться важлива зустріч.</code>"
 )
@@ -34,14 +29,14 @@ ADMIN_BANS_TEXT = (
 )
 
 ADMIN_PREMIUM_TEXT = (
-    "💎 <b>Premium-керування</b>\n\n"
-    "Видати premium на кількість днів:\n"
+    "💎 <b>Керування Ліміт+</b>\n\n"
+    "Видати Ліміт+ на кількість днів:\n"
     "<code>/premium USER_ID DAYS</code>\n\n"
-    "Видати premium безстроково:\n"
+    "Видати Ліміт+ безстроково:\n"
     "<code>/premium_forever USER_ID</code>\n\n"
-    "Забрати premium:\n"
+    "Забрати Ліміт+:\n"
     "<code>/unpremium USER_ID</code>\n\n"
-    "Перевірити premium-статус:\n"
+    "Перевірити статус Ліміт+:\n"
     "<code>/premium_status USER_ID</code>\n\n"
     "Приклади:\n"
     "<code>/premium 123456789 30</code>\n"
@@ -49,15 +44,49 @@ ADMIN_PREMIUM_TEXT = (
 )
 
 
-def build_admin_limits_text() -> str:
+ADMIN_LIMIT_LABELS = {
+    "text_messages_limit": "Текстові повідомлення",
+    "files_limit": "Файли",
+    "ocr_limit": "Фотографії",
+    "links_limit": "Посилання",
+    "summaries_limit": "Короткі змісти",
+}
+
+ADMIN_LIMIT_ICONS = {
+    "text_messages_limit": "💬",
+    "files_limit": "📄",
+    "ocr_limit": "🖼",
+    "links_limit": "🔗",
+    "summaries_limit": "📝",
+}
+
+
+def build_admin_limits_text(limits: dict[str, int]) -> str:
     return (
-        "⚙️ <b>Поточні Free-ліміти</b>\n\n"
-        f"💬 Текстові повідомлення: <b>{FREE_DAILY_TEXT_MESSAGE_LIMIT}</b> / день\n"
-        f"📄 Файли: <b>{FREE_DAILY_FILE_LIMIT}</b> / день\n"
-        f"🖼 OCR: <b>{FREE_DAILY_OCR_LIMIT}</b> / день\n"
-        f"🔗 Посилання: <b>{FREE_DAILY_LINK_LIMIT}</b> / день\n"
-        f"📝 Короткі змісти: <b>{FREE_DAILY_SUMMARY_LIMIT}</b> / день\n\n"
-        "Premium-користувачі та адміністратори зараз мають безліміт."
+        "⚙️ <b>Поточні ліміти</b>\n\n"
+        f"💬 Текстові повідомлення: <b>{limits['text_messages_limit']}</b> / день\n"
+        f"📄 Файли: <b>{limits['files_limit']}</b> / день\n"
+        f"🖼 Фотографії: <b>{limits['ocr_limit']}</b> / день\n"
+        f"🔗 Посилання: <b>{limits['links_limit']}</b> / день\n"
+        f"📝 Короткі змісти: <b>{limits['summaries_limit']}</b> / день\n\n"
+        "Оберіть ліміт кнопкою нижче, щоб змінити значення.\n\n"
+        "Користувачі з Ліміт+ та адміністратори зараз мають безліміт."
+    )
+
+
+def build_admin_limit_edit_text(
+    limit_name: str,
+    current_value: int,
+    default_value: int,
+) -> str:
+    label = ADMIN_LIMIT_LABELS.get(limit_name, limit_name)
+    icon = ADMIN_LIMIT_ICONS.get(limit_name, "⚙️")
+
+    return (
+        f"{icon} <b>{label}</b>\n\n"
+        f"Поточне значення: <b>{current_value}</b> / день\n"
+        f"Значення з .env: <b>{default_value}</b> / день\n\n"
+        "Змініть значення кнопками нижче."
     )
 
 
@@ -75,32 +104,43 @@ def build_admin_stats_text(
         f"Усього: <b>{total_users}</b>\n"
         f"Активні: <b>{active_users}</b>\n"
         f"Заблоковані: <b>{banned_users}</b>\n"
-        f"Free: <b>{free_users}</b>\n"
-        f"Premium: <b>{premium_users}</b>\n\n"
+        f"Ліміт: <b>{free_users}</b>\n"
+        f"Ліміт+: <b>{premium_users}</b>\n\n"
         "📈 <b>Використання сьогодні:</b>\n"
         f"💬 Текстові повідомлення: <b>{usage_totals['text_messages_processed']}</b>\n"
         f"📄 Файли: <b>{usage_totals['files_processed']}</b>\n"
-        f"🖼 OCR: <b>{usage_totals['ocr_processed']}</b>\n"
+        f"🖼 Фотографії: <b>{usage_totals['ocr_processed']}</b>\n"
         f"🔗 Посилання: <b>{usage_totals['links_processed']}</b>\n"
         f"📝 Короткі змісти: <b>{usage_totals['summaries_generated']}</b>"
     )
 
 
-def build_admin_users_text(users: list[dict], limit: int = 15) -> str:
+def build_admin_users_text(
+    users: list[dict],
+    page: int = 0,
+    page_size: int = 10,
+) -> str:
     if not users:
         return "👥 <b>Користувачів поки немає.</b>"
 
+    page = max(page, 0)
+    total_pages = max((len(users) + page_size - 1) // page_size, 1)
+    page = min(page, total_pages - 1)
+    start_index = page * page_size
+    page_users = users[start_index:start_index + page_size]
+
     parts = [
         "👥 <b>Останні користувачі</b>\n",
-        f"Показано останні {min(len(users), limit)} з {len(users)}.\n"
+        f"Сторінка {page + 1} з {total_pages}. "
+        f"Показано {len(page_users)} з {len(users)}.\n"
     ]
 
-    for index, user in enumerate(users[:limit], start=1):
+    for index, user in enumerate(page_users, start=start_index + 1):
         status = "🚫 banned" if user.get("is_banned") else "✅ active"
-        plan = user.get("plan") or "free"
-        username = user.get("username") or "N/A"
-        full_name = user.get("full_name") or "N/A"
-        last_activity = user.get("last_activity") or "N/A"
+        plan = "Ліміт+" if user.get("plan") == "premium" else "Ліміт"
+        username = html.escape(str(user.get("username") or "N/A"))
+        full_name = html.escape(str(user.get("full_name") or "N/A"))
+        last_activity = html.escape(str(user.get("last_activity") or "N/A"))
 
         parts.append(
             f"{index}. <b>{full_name}</b> ({username})\n"
@@ -110,8 +150,31 @@ def build_admin_users_text(users: list[dict], limit: int = 15) -> str:
         )
 
     parts.append(
-        "\nПовний список користувачів можна отримати командою:\n"
-        "<code>/users</code>"
+        "\nОберіть користувача кнопкою нижче, щоб відкрити дії."
     )
 
     return "\n\n".join(parts)
+
+
+def build_admin_user_detail_text(user: dict) -> str:
+    status = "🚫 заблокований" if user.get("is_banned") else "✅ активний"
+    plan = "Ліміт+" if user.get("plan") == "premium" else "Ліміт"
+    premium_until = user.get("premium_until") or "безстроково"
+    username = html.escape(str(user.get("username") or "N/A"))
+    full_name = html.escape(str(user.get("full_name") or "N/A"))
+    last_activity = html.escape(str(user.get("last_activity") or "N/A"))
+
+    plan_line = plan
+
+    if user.get("plan") == "premium":
+        plan_line = f"{plan} до {html.escape(str(premium_until))}"
+
+    return (
+        "👤 <b>Користувач</b>\n\n"
+        f"Ім'я: <b>{full_name}</b>\n"
+        f"Username: {username}\n"
+        f"ID: <code>{user['user_id']}</code>\n"
+        f"Статус: {status}\n"
+        f"Тариф: {plan_line}\n"
+        f"Активність: {last_activity}"
+    )

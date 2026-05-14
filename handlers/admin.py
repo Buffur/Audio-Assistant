@@ -1,18 +1,11 @@
 # Файл: handlers/admin.py
 
-import asyncio
 import html
 import logging
 
-from aiogram import Router, types
-from aiogram.exceptions import (
-    TelegramAPIError,
-    TelegramBadRequest,
-    TelegramForbiddenError,
-    TelegramRetryAfter,
-)
+from aiogram import F, Router, types
 from aiogram.filters import Command
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import ADMIN_IDS
 from database.db import (
@@ -21,6 +14,7 @@ from database.db import (
     get_all_users_detailed,
     unban_user,
 )
+from services.telegram_sender import safe_answer_voice, safe_send_voice, sleep_after_send
 from services.tts import generate_voice
 from services.voice_sender import safe_remove_file
 
@@ -32,16 +26,26 @@ BROADCAST_RATE = "+0%"
 BROADCAST_DELAY_SECONDS = 0.05
 MAX_CAPTION_LENGTH = 1024
 MAX_BROADCAST_TEXT_LENGTH = 60000
+MAX_BROADCAST_PREVIEW_LENGTH = 1000
+BROADCAST_CONFIRM_CALLBACK = "admin_broadcast:confirm"
+BROADCAST_CANCEL_CALLBACK = "admin_broadcast:cancel"
+
+_pending_broadcasts: dict[int, str] = {}
+
+
+def _is_admin_user_id(user_id: int | None) -> bool:
+    """
+    Перевіряє, чи є user_id адміністратором.
+    """
+    return bool(user_id and user_id in ADMIN_IDS)
 
 
 def _is_admin(message: types.Message) -> bool:
     """
     Перевіряє, чи є користувач адміністратором.
     """
-    return bool(
-        message.from_user
-        and message.from_user.id in ADMIN_IDS
-    )
+    user_id = message.from_user.id if message.from_user else None
+    return _is_admin_user_id(user_id)
 
 
 def _get_command_text(message: types.Message, command: str) -> str:
@@ -72,6 +76,37 @@ def _build_broadcast_caption(text_to_send: str) -> str:
     return caption_text
 
 
+def _build_broadcast_preview_text(text_to_send: str) -> str:
+    safe_text = html.escape(text_to_send)
+
+    if len(safe_text) > MAX_BROADCAST_PREVIEW_LENGTH:
+        safe_text = safe_text[:MAX_BROADCAST_PREVIEW_LENGTH - 3] + "..."
+
+    return (
+        "📢 <b>Підтвердження розсилки</b>\n\n"
+        f"Символів: <b>{len(text_to_send)}</b>\n\n"
+        "<b>Текст:</b>\n"
+        f"{safe_text}\n\n"
+        "Після підтвердження бот згенерує голосове повідомлення "
+        "і надішле його всім активним користувачам."
+    )
+
+
+def _broadcast_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Підтвердити",
+                callback_data=BROADCAST_CONFIRM_CALLBACK
+            ),
+            InlineKeyboardButton(
+                text="❌ Скасувати",
+                callback_data=BROADCAST_CANCEL_CALLBACK
+            ),
+        ]
+    ])
+
+
 async def _upload_audio_files_to_telegram(
     message: types.Message,
     audio_files: list[str],
@@ -87,24 +122,19 @@ async def _upload_audio_files_to_telegram(
 
     for audio_path in audio_files:
         try:
-            sent_msg = await message.answer_voice(
-                FSInputFile(audio_path),
-                caption=caption_text
+            sent_msg = await safe_answer_voice(
+                message=message,
+                voice=FSInputFile(audio_path),
+                caption=caption_text,
             )
 
-            if sent_msg.voice:
+            if sent_msg and sent_msg.voice:
                 cached_file_ids.append(sent_msg.voice.file_id)
             else:
                 logger.warning(
                     "Admin broadcast: Telegram не повернув voice.file_id для файлу: %s",
                     audio_path
                 )
-
-        except TelegramAPIError:
-            logger.exception(
-                "Admin broadcast: помилка завантаження audio-файлу в Telegram: %s",
-                audio_path
-            )
 
         except Exception:
             logger.exception(
@@ -131,69 +161,18 @@ async def _send_broadcast_to_user(
     - True, якщо всі частини відправлено;
     - False, якщо сталася помилка.
     """
-    try:
-        for file_id in cached_file_ids:
-            await bot.send_voice(
-                chat_id=user_id,
-                voice=file_id,
-                caption=caption_text
-            )
-
-        return True
-
-    except TelegramRetryAfter as error:
-        logger.warning(
-            "Admin broadcast: Telegram rate limit для user_id=%s, retry_after=%s",
-            user_id,
-            error.retry_after
+    for file_id in cached_file_ids:
+        sent_message = await safe_send_voice(
+            bot=bot,
+            chat_id=user_id,
+            voice=file_id,
+            caption=caption_text,
         )
 
-        await asyncio.sleep(error.retry_after)
-
-        try:
-            for file_id in cached_file_ids:
-                await bot.send_voice(
-                    chat_id=user_id,
-                    voice=file_id,
-                    caption=caption_text
-                )
-
-            return True
-
-        except Exception:
-            logger.exception(
-                "Admin broadcast: повторна спроба після rate limit не вдалася для user_id=%s",
-                user_id
-            )
+        if sent_message is None:
             return False
 
-    except TelegramForbiddenError:
-        logger.warning(
-            "Admin broadcast: користувач заблокував бота або недоступний: user_id=%s",
-            user_id
-        )
-        return False
-
-    except TelegramBadRequest:
-        logger.exception(
-            "Admin broadcast: некоректний запит під час надсилання user_id=%s",
-            user_id
-        )
-        return False
-
-    except TelegramAPIError:
-        logger.exception(
-            "Admin broadcast: Telegram API error для user_id=%s",
-            user_id
-        )
-        return False
-
-    except Exception:
-        logger.exception(
-            "Admin broadcast: несподівана помилка надсилання user_id=%s",
-            user_id
-        )
-        return False
+    return True
 
 
 def _parse_target_user_id(message: types.Message) -> int | None:
@@ -214,31 +193,14 @@ def _parse_target_user_id(message: types.Message) -> int | None:
     return int(args[1])
 
 
-@router.message(Command("broadcast"))
-async def broadcast_message(message: types.Message) -> None:
-    if not _is_admin(message):
-        return
-
-    text_to_send = _get_command_text(message, "/broadcast")
-
-    if not text_to_send:
-        await message.answer(
-            "❌ Ви не ввели текст. Використання:\n"
-            "<code>/broadcast Ваш текст для розсилки</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    if len(text_to_send) > MAX_BROADCAST_TEXT_LENGTH:
-        await message.answer(
-            f"❌ Текст розсилки занадто великий.\n"
-            f"Максимум: {MAX_BROADCAST_TEXT_LENGTH} символів."
-        )
-        return
-
+async def _run_broadcast(
+    message: types.Message,
+    admin_id: int,
+    text_to_send: str
+) -> None:
     logger.info(
         "Admin broadcast: старт генерації розсилки від admin_id=%s, text_length=%s",
-        message.from_user.id,
+        admin_id,
         len(text_to_send)
     )
 
@@ -284,7 +246,7 @@ async def broadcast_message(message: types.Message) -> None:
 
     for user_id in users:
         # Адміністратор уже отримав audio під час кешування file_id.
-        if message.from_user and user_id == message.from_user.id:
+        if user_id == admin_id:
             success_count += 1
             continue
 
@@ -300,7 +262,7 @@ async def broadcast_message(message: types.Message) -> None:
         else:
             failed_count += 1
 
-        await asyncio.sleep(BROADCAST_DELAY_SECONDS)
+        await sleep_after_send(BROADCAST_DELAY_SECONDS)
 
     logger.info(
         "Admin broadcast: завершено | success=%s | failed=%s | total=%s",
@@ -314,6 +276,81 @@ async def broadcast_message(message: types.Message) -> None:
         f"Успішно доставлено: {success_count} з {len(users)}.\n"
         f"Не доставлено: {failed_count}."
     )
+
+
+@router.message(Command("broadcast"))
+async def broadcast_message(message: types.Message) -> None:
+    if not _is_admin(message):
+        return
+
+    admin_id = message.from_user.id
+    text_to_send = _get_command_text(message, "/broadcast")
+
+    if not text_to_send:
+        await message.answer(
+            "❌ Ви не ввели текст. Використання:\n"
+            "<code>/broadcast Ваш текст для розсилки</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    if len(text_to_send) > MAX_BROADCAST_TEXT_LENGTH:
+        await message.answer(
+            f"❌ Текст розсилки занадто великий.\n"
+            f"Максимум: {MAX_BROADCAST_TEXT_LENGTH} символів."
+        )
+        return
+
+    _pending_broadcasts[admin_id] = text_to_send
+
+    await message.answer(
+        _build_broadcast_preview_text(text_to_send),
+        parse_mode="HTML",
+        reply_markup=_broadcast_confirmation_keyboard()
+    )
+
+
+@router.callback_query(F.data == BROADCAST_CONFIRM_CALLBACK)
+async def confirm_broadcast_callback(callback: types.CallbackQuery) -> None:
+    admin_id = callback.from_user.id if callback.from_user else None
+
+    if not _is_admin_user_id(admin_id):
+        await callback.answer("У вас немає доступу до розсилки.", show_alert=True)
+        return
+
+    text_to_send = _pending_broadcasts.pop(admin_id, None)
+
+    if not text_to_send:
+        await callback.answer("Немає активної розсилки для підтвердження.", show_alert=True)
+        return
+
+    if not callback.message:
+        await callback.answer("Не вдалося знайти повідомлення розсилки.", show_alert=True)
+        return
+
+    await callback.answer("Розсилку підтверджено.")
+    await callback.message.edit_text("✅ Розсилку підтверджено. Запускаю процес...")
+    await _run_broadcast(
+        message=callback.message,
+        admin_id=admin_id,
+        text_to_send=text_to_send
+    )
+
+
+@router.callback_query(F.data == BROADCAST_CANCEL_CALLBACK)
+async def cancel_broadcast_callback(callback: types.CallbackQuery) -> None:
+    admin_id = callback.from_user.id if callback.from_user else None
+
+    if not _is_admin_user_id(admin_id):
+        await callback.answer("У вас немає доступу до розсилки.", show_alert=True)
+        return
+
+    _pending_broadcasts.pop(admin_id, None)
+
+    if callback.message:
+        await callback.message.edit_text("❌ Розсилку скасовано.")
+
+    await callback.answer("Розсилку скасовано.")
 
 
 @router.message(Command("users"))

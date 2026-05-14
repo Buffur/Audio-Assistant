@@ -66,13 +66,26 @@ def format_catalog_item(index: int, item: dict) -> str:
     )
 
 
-def build_catalog_text(items: list[dict]) -> str:
+def build_catalog_text(
+    items: list[dict],
+    page: int = 0,
+    total_pages: int = 1,
+    total_items: int | None = None,
+    page_size: int = 5,
+) -> str:
     if not items:
         return EMPTY_CATALOG_TEXT
 
-    parts = ["📚 <b>Каталог документів:</b>\n"]
+    total_pages = max(total_pages, 1)
+    total_items = len(items) if total_items is None else total_items
 
-    for index, item in enumerate(items, start=1):
+    parts = [
+        "📚 <b>Каталог документів:</b>\n",
+        f"Сторінка {page + 1} з {total_pages}. "
+        f"Показано {len(items)} з {total_items}.\n"
+    ]
+
+    for index, item in enumerate(items, start=page * page_size + 1):
         parts.append(format_catalog_item(index, item))
 
     parts.append(

@@ -8,8 +8,16 @@ from types import ModuleType
 from typing import Any
 
 from aiogram import Bot, Dispatcher  # type: ignore
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
-from config import BOT_TOKEN
+from config import (
+    ADMIN_IDS,
+    BOT_TOKEN,
+    RATE_LIMIT_BACKEND,
+    RATE_LIMIT_MAX_EVENTS,
+    RATE_LIMIT_PERIOD_SECONDS,
+    RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
+)
 from database.db import init_db
 
 # ============================================================
@@ -111,12 +119,30 @@ RateLimitMiddleware = _import_optional_attr(
     ),
 )
 
+RedisRateLimitMiddleware = _import_optional_attr(
+    module_path="middlewares.redis_rate_limit",
+    attr_name="RedisRateLimitMiddleware",
+    warning_message=(
+        "middlewares.redis_rate_limit не знайдено. "
+        "Redis rate limit не підключено."
+    ),
+)
+
 close_http_session = _import_optional_attr(
     module_path="services.parser",
     attr_name="close_http_session",
     warning_message=(
         "services.parser або close_http_session не знайдено. "
         "Закриття HTTP-сесії парсера не підключено."
+    ),
+)
+
+close_redis_client = _import_optional_attr(
+    module_path="services.redis_client",
+    attr_name="close_redis_client",
+    warning_message=(
+        "services.redis_client або close_redis_client не знайдено. "
+        "Закриття Redis-з'єднання не підключено."
     ),
 )
 
@@ -299,15 +325,86 @@ def setup_middlewares(dp: Dispatcher) -> None:
         dp.callback_query.middleware(ban_middleware)
         logger.info("Підключено BanMiddleware")
 
+    if RATE_LIMIT_BACKEND == "redis" and RedisRateLimitMiddleware is not None:
+        rate_limit_middleware = RedisRateLimitMiddleware(
+            max_events=RATE_LIMIT_MAX_EVENTS,
+            period_seconds=RATE_LIMIT_PERIOD_SECONDS,
+            warning_cooldown_seconds=RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
+        )
+        dp.message.middleware(rate_limit_middleware)
+        dp.callback_query.middleware(rate_limit_middleware)
+        logger.info("Підключено RedisRateLimitMiddleware")
+        return
+
+    if RATE_LIMIT_BACKEND == "redis" and RedisRateLimitMiddleware is None:
+        logger.warning(
+            "RATE_LIMIT_BACKEND=redis, але RedisRateLimitMiddleware недоступний. "
+            "Використовую in-memory RateLimitMiddleware."
+        )
+
     if RateLimitMiddleware is not None:
         rate_limit_middleware = RateLimitMiddleware(
-            max_events=8,
-            period_seconds=10,
-            warning_cooldown_seconds=10,
+            max_events=RATE_LIMIT_MAX_EVENTS,
+            period_seconds=RATE_LIMIT_PERIOD_SECONDS,
+            warning_cooldown_seconds=RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
         )
         dp.message.middleware(rate_limit_middleware)
         dp.callback_query.middleware(rate_limit_middleware)
         logger.info("Підключено RateLimitMiddleware")
+
+
+# ============================================================
+# BOT COMMANDS
+# ============================================================
+
+USER_COMMANDS = [
+    BotCommand(command="start", description="Почати роботу"),
+    BotCommand(command="help", description="Показати довідку"),
+    BotCommand(command="settings", description="Налаштувати голос і швидкість"),
+    BotCommand(command="usage", description="Перевірити денні ліміти"),
+    BotCommand(command="catalog", description="Відкрити історію документів"),
+    BotCommand(command="history", description="Показати історію документів"),
+]
+
+ADMIN_COMMANDS = [
+    *USER_COMMANDS,
+    BotCommand(command="admin", description="Відкрити адмін-меню"),
+    BotCommand(command="users", description="Показати користувачів"),
+    BotCommand(command="broadcast", description="Запустити розсилку"),
+    BotCommand(command="ban", description="Заблокувати користувача"),
+    BotCommand(command="unban", description="Розблокувати користувача"),
+    BotCommand(command="premium", description="Видати Ліміт+ на строк"),
+    BotCommand(command="premium_forever", description="Видати Ліміт+ назавжди"),
+    BotCommand(command="unpremium", description="Зняти Ліміт+"),
+    BotCommand(command="premium_status", description="Перевірити статус Ліміт+"),
+]
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    try:
+        await bot.set_my_commands(
+            USER_COMMANDS,
+            scope=BotCommandScopeDefault(),
+        )
+        logger.info("Команди бота для користувачів встановлено.")
+    except Exception:
+        logger.exception("Не вдалося встановити команди бота для користувачів.")
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(
+                ADMIN_COMMANDS,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+            logger.info(
+                "Адмін-команди бота встановлено для admin_id=%s.",
+                admin_id,
+            )
+        except Exception:
+            logger.exception(
+                "Не вдалося встановити адмін-команди бота для admin_id=%s.",
+                admin_id,
+            )
 
 
 # ============================================================
@@ -324,6 +421,7 @@ async def main() -> None:
 
     setup_middlewares(dp)
     include_project_routers(dp)
+    await setup_bot_commands(bot)
 
     if cleanup_expired_reading_sessions is not None:
         cleanup_task = asyncio.create_task(
@@ -351,6 +449,9 @@ async def main() -> None:
 
         if close_http_session is not None:
             await close_http_session()
+
+        if close_redis_client is not None:
+            await close_redis_client()
 
         await bot.session.close()
         logger.info("Бот зупинено.")

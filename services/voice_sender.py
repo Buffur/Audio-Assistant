@@ -6,7 +6,11 @@ import os
 from aiogram import types
 from aiogram.types import FSInputFile, InlineKeyboardMarkup
 
+from services.telegram_sender import DEFAULT_SEND_DELAY_SECONDS, safe_answer_voice
+
 logger = logging.getLogger(__name__)
+
+SEND_VOICE_DELAY_SECONDS = DEFAULT_SEND_DELAY_SECONDS
 
 
 def safe_remove_file(file_path: str | None) -> None:
@@ -48,10 +52,18 @@ async def send_voice_files(
         is_last_file = index == len(audio_files) - 1
 
         try:
-            await message.answer_voice(
-                FSInputFile(audio_path),
+            sent_message = await safe_answer_voice(
+                message=message,
+                voice=FSInputFile(audio_path),
                 caption=caption if is_last_file else None,
-                reply_markup=reply_markup if is_last_file else None
+                reply_markup=reply_markup if is_last_file else None,
+                delay_seconds=SEND_VOICE_DELAY_SECONDS,
             )
+
+            if sent_message is None:
+                logger.warning(
+                    "VoiceSender: не вдалося надіслати voice-файл: %s",
+                    audio_path,
+                )
         finally:
             safe_remove_file(audio_path)

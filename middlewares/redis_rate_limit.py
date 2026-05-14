@@ -2,15 +2,41 @@
 
 import logging
 import time
+import uuid
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
+from config import ADMIN_IDS
+from middlewares.rate_limit import RateLimitMiddleware
 from services.redis_client import get_redis_client
 from texts.messages import RATE_LIMIT_TEXT
 
 logger = logging.getLogger(__name__)
+
+RATE_LIMIT_LUA_SCRIPT = """
+local key = KEYS[1]
+local min_allowed_time = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local event_id = ARGV[3]
+local period_seconds = tonumber(ARGV[4])
+local max_events = tonumber(ARGV[5])
+
+redis.call("ZREMRANGEBYSCORE", key, "-inf", min_allowed_time)
+
+local current_events_count = redis.call("ZCARD", key)
+
+if current_events_count >= max_events then
+    redis.call("EXPIRE", key, period_seconds)
+    return 0
+end
+
+redis.call("ZADD", key, now, event_id)
+redis.call("EXPIRE", key, period_seconds)
+
+return 1
+""".strip()
 
 
 class RedisRateLimitMiddleware(BaseMiddleware):
@@ -38,6 +64,11 @@ class RedisRateLimitMiddleware(BaseMiddleware):
         self.max_events = max_events
         self.period_seconds = period_seconds
         self.warning_cooldown_seconds = warning_cooldown_seconds
+        self._fallback_limiter = RateLimitMiddleware(
+            max_events=max_events,
+            period_seconds=period_seconds,
+            warning_cooldown_seconds=warning_cooldown_seconds,
+        )
 
     def _events_key(self, user_id: int) -> str:
         return f"rate_limit:events:{user_id}"
@@ -51,25 +82,20 @@ class RedisRateLimitMiddleware(BaseMiddleware):
         key = self._events_key(user_id)
         min_allowed_time = now - self.period_seconds
 
-        async with client.pipeline(transaction=True) as pipe:
-            await pipe.zremrangebyscore(key, 0, min_allowed_time)
-            await pipe.zcard(key)
-            results = await pipe.execute()
+        event_id = f"{now}:{user_id}:{uuid.uuid4().hex}"
 
-        current_events_count = int(results[1])
+        result = await client.eval(
+            RATE_LIMIT_LUA_SCRIPT,
+            1,
+            key,
+            min_allowed_time,
+            now,
+            event_id,
+            self.period_seconds,
+            self.max_events,
+        )
 
-        if current_events_count >= self.max_events:
-            await client.expire(key, self.period_seconds)
-            return False
-
-        event_id = f"{now}:{user_id}"
-
-        async with client.pipeline(transaction=True) as pipe:
-            await pipe.zadd(key, {event_id: now})
-            await pipe.expire(key, self.period_seconds)
-            await pipe.execute()
-
-        return True
+        return bool(result)
 
     async def _can_send_warning(self, user_id: int) -> bool:
         client = await get_redis_client()
@@ -110,14 +136,17 @@ class RedisRateLimitMiddleware(BaseMiddleware):
         user_id = user.id
         now = time.time()
 
+        if user_id in ADMIN_IDS:
+            return await handler(event, data)
+
         try:
             is_allowed = await self._is_allowed(user_id, now)
         except Exception:
             logger.exception(
-                "RedisRateLimitMiddleware: Redis помилка, пропускаю подію без rate limit user_id=%s",
+                "RedisRateLimitMiddleware: Redis помилка, використовую in-memory fallback user_id=%s",
                 user_id
             )
-            return await handler(event, data)
+            return await self._fallback_limiter(handler, event, data)
 
         if not is_allowed:
             logger.warning(

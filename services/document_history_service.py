@@ -8,6 +8,7 @@ from aiogram import types
 from database.db import (
     add_document_history,
     clear_user_document_history,
+    count_user_document_history,
     delete_user_document,
     get_user_document_by_id,
     get_user_document_history,
@@ -16,7 +17,7 @@ from database.db import (
 logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 300
-DEFAULT_HISTORY_LIMIT = 10
+DEFAULT_HISTORY_LIMIT = 5
 
 
 def detect_message_source_type(message: types.Message) -> str:
@@ -134,9 +135,18 @@ async def save_document_history_from_message(
 
 async def get_recent_document_history(
     user_id: int,
-    limit: int = DEFAULT_HISTORY_LIMIT
+    limit: int = DEFAULT_HISTORY_LIMIT,
+    offset: int = 0,
 ) -> list[dict]:
-    return await get_user_document_history(user_id=user_id, limit=limit)
+    return await get_user_document_history(
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def count_recent_document_history(user_id: int) -> int:
+    return await count_user_document_history(user_id=user_id)
 
 
 async def get_catalog_document_chunks(

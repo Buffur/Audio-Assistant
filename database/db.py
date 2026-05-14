@@ -52,6 +52,7 @@ async def init_db() -> None:
                 full_name TEXT,
                 voice TEXT,
                 rate TEXT,
+                tts_provider TEXT,
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_banned INTEGER DEFAULT 0,
                 plan TEXT DEFAULT 'free',
@@ -63,6 +64,12 @@ async def init_db() -> None:
             logger.info("DB migration: додаю колонку users.is_banned")
             await db.execute(
                 "ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0"
+            )
+
+        if not await _column_exists(db, "users", "tts_provider"):
+            logger.info("DB migration: додаю колонку users.tts_provider")
+            await db.execute(
+                "ALTER TABLE users ADD COLUMN tts_provider TEXT"
             )
 
         if not await _column_exists(db, "users", "plan"):
@@ -112,6 +119,14 @@ async def init_db() -> None:
                 links_processed INTEGER NOT NULL DEFAULT 0,
                 summaries_generated INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, usage_date)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -169,6 +184,20 @@ async def get_user_settings(user_id: int) -> tuple[str | None, str | None]:
     return None, None
 
 
+async def get_user_tts_provider(user_id: int) -> str | None:
+    async with get_db_connection() as db:
+        async with db.execute(
+            "SELECT tts_provider FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if row:
+        return row[0]
+
+    return None
+
+
 async def set_user_settings(
     user_id: int,
     voice: str | None = None,
@@ -199,6 +228,27 @@ async def set_user_settings(
                 last_activity = CURRENT_TIMESTAMP
             """,
             (user_id, voice, rate),
+        )
+        await db.commit()
+
+
+async def set_user_tts_provider(user_id: int, tts_provider: str) -> None:
+    async with get_db_connection() as db:
+        await db.execute(
+            """
+            INSERT INTO users (
+                user_id,
+                username,
+                full_name,
+                tts_provider,
+                last_activity
+            )
+            VALUES (?, 'N/A', 'N/A', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                tts_provider = excluded.tts_provider,
+                last_activity = CURRENT_TIMESTAMP
+            """,
+            (user_id, tts_provider),
         )
         await db.commit()
 
@@ -496,6 +546,56 @@ async def try_increment_daily_usage_under_limit(
             raise
 
 
+async def get_app_setting(key: str) -> str | None:
+    async with get_db_connection() as db:
+        async with db.execute(
+            """
+            SELECT value
+            FROM app_settings
+            WHERE key = ?
+            """,
+            (key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    return str(row[0]) if row else None
+
+
+async def get_app_settings(keys: list[str]) -> dict[str, str]:
+    if not keys:
+        return {}
+
+    placeholders = ",".join("?" for _ in keys)
+
+    async with get_db_connection() as db:
+        async with db.execute(
+            f"""
+            SELECT key, value
+            FROM app_settings
+            WHERE key IN ({placeholders})
+            """,
+            keys,
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+async def set_app_setting(key: str, value: str) -> None:
+    async with get_db_connection() as db:
+        await db.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+        await db.commit()
+
+
 async def add_document_history(
     user_id: int,
     source_type: str,
@@ -537,6 +637,7 @@ async def add_document_history(
 async def get_user_document_history(
     user_id: int,
     limit: int = 10,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     async with get_db_connection() as db:
         async with db.execute(
@@ -553,9 +654,9 @@ async def get_user_document_history(
             FROM document_history
             WHERE user_id = ?
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (user_id, limit),
+            (user_id, limit, offset),
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -572,6 +673,21 @@ async def get_user_document_history(
         }
         for row in rows
     ]
+
+
+async def count_user_document_history(user_id: int) -> int:
+    async with get_db_connection() as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*)
+            FROM document_history
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    return int(row[0]) if row else 0
 
 
 async def get_user_document_by_id(

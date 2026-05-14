@@ -1,6 +1,7 @@
 # Файл: services/redis_client.py
 
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 import redis.asyncio as redis
 
@@ -9,6 +10,37 @@ from config import REDIS_URL
 logger = logging.getLogger(__name__)
 
 _redis_client: redis.Redis | None = None
+
+
+def _redact_redis_url(redis_url: str) -> str:
+    """
+    Приховує пароль у Redis URL перед записом у лог.
+    """
+    try:
+        parsed = urlsplit(redis_url)
+    except ValueError:
+        return "<invalid Redis URL>"
+
+    if not parsed.password or "@" not in parsed.netloc:
+        return redis_url
+
+    credentials, host = parsed.netloc.rsplit("@", 1)
+
+    if ":" in credentials:
+        username, _password = credentials.split(":", 1)
+        safe_credentials = f"{username}:***"
+    else:
+        safe_credentials = "***"
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"{safe_credentials}@{host}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 async def get_redis_client() -> redis.Redis:
@@ -26,7 +58,7 @@ async def get_redis_client() -> redis.Redis:
             decode_responses=True
         )
 
-        logger.info("Redis client створено: %s", REDIS_URL)
+        logger.info("Redis client створено: %s", _redact_redis_url(REDIS_URL))
 
     return _redis_client
 

@@ -28,7 +28,11 @@ from services.reading_session_store import (
 )
 from services.tts import generate_voice
 from services.usage_limits_service import reserve_summary_generation
-from services.user_settings_service import get_effective_user_settings
+from services.user_settings_service import (
+    build_user_tts_provider_chain,
+    get_effective_user_settings,
+    get_effective_user_tts_provider,
+)
 from services.voice_selector import select_voice_for_text
 from services.voice_sender import send_voice_files
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
@@ -240,12 +244,17 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             return
 
         voice_pref, rate = await get_effective_user_settings(user_id)
+        tts_provider = await get_effective_user_tts_provider(user_id)
         voice = select_voice_for_text(summary_text, voice_pref)
 
         audio_files = await generate_voice(
             text=summary_text,
             voice=voice,
             rate=rate,
+            provider_chain=build_user_tts_provider_chain(
+                tts_provider,
+                voice=voice,
+            ),
         )
 
         if not audio_files:

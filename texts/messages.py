@@ -27,6 +27,11 @@ ANALYZING_MATERIAL_TEXT = "⏳ Аналізую матеріал..."
 GENERIC_TEXT_EXTRACT_ERROR = "❌ Не вдалося отримати текст."
 TEXT_SPLIT_ERROR = "❌ Не вдалося розбити текст."
 
+UNSUPPORTED_MESSAGE_TEXT = (
+    "ℹ️ Я можу обробити текст, посилання, PDF, DOCX, TXT або фотографію. "
+    "Стікери, GIF, голосові та інші типи повідомлень не обробляються."
+)
+
 BACKGROUND_GENERATION_ERROR = "❌ Помилка фонової генерації."
 CHUNK_AUDIO_GENERATION_ERROR = "❌ Не вдалося згенерувати аудіо для цієї частини."
 

@@ -7,10 +7,12 @@ import time
 from contextlib import suppress
 from typing import Any
 
+from config import READING_SESSION_TTL_SECONDS
+
 logger = logging.getLogger(__name__)
 
-# Сесія читання живе 45 хвилин після останньої активності.
-SESSION_TTL_SECONDS = 45 * 60
+# Сесія читання живе стільки, скільки задано в конфігурації.
+SESSION_TTL_SECONDS = READING_SESSION_TTL_SECONDS
 
 _reading_sessions: dict[int, dict[str, Any]] = {}
 _user_locks: dict[int, asyncio.Lock] = {}

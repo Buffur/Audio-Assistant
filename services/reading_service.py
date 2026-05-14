@@ -2,10 +2,9 @@
 
 import asyncio
 import logging
-import os
 from contextlib import suppress
 
-from aiogram.types import FSInputFile, Message
+from aiogram.types import Message
 
 from keyboards.reading import reading_navigation_keyboard
 from services.reading_session_store import (
@@ -14,19 +13,15 @@ from services.reading_session_store import (
     update_reading_session,
 )
 from services.tts import generate_voice
-from services.user_settings_service import get_effective_user_settings
+from services.user_settings_service import (
+    build_user_tts_provider_chain,
+    get_effective_user_settings,
+    get_effective_user_tts_provider,
+)
 from services.voice_selector import select_voice_for_text
+from services.voice_sender import send_voice_files
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_remove_file(file_path: str | None) -> None:
-    if not file_path:
-        return
-
-    with suppress(Exception):
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
 
 async def safe_delete_message(message: Message | None) -> None:
@@ -57,17 +52,12 @@ async def _send_audio_files(
     """
     Надсилає audio-файли як voice і завжди видаляє тимчасові файли.
     """
-    for index, audio_path in enumerate(audio_files):
-        is_last_file = index == len(audio_files) - 1
-
-        try:
-            await message.answer_voice(
-                FSInputFile(audio_path),
-                caption=caption if is_last_file else None,
-                reply_markup=reply_markup if is_last_file else None,
-            )
-        finally:
-            _safe_remove_file(audio_path)
+    await send_voice_files(
+        message=message,
+        audio_files=audio_files,
+        caption=caption,
+        reply_markup=reply_markup,
+    )
 
 
 async def reply_with_voice(
@@ -98,12 +88,17 @@ async def reply_with_voice(
 
     try:
         voice_pref, rate = await get_effective_user_settings(user_id)
+        tts_provider = await get_effective_user_tts_provider(user_id)
         voice = select_voice_for_text(clean_text, voice_pref)
 
         audio_files = await generate_voice(
             text=clean_text,
             voice=voice,
             rate=rate,
+            provider_chain=build_user_tts_provider_chain(
+                tts_provider,
+                voice=voice,
+            ),
         )
 
         if not audio_files:
@@ -132,6 +127,7 @@ async def _get_audio_from_prefetch_or_generate(
     chunk_text: str,
     voice: str,
     rate: str,
+    provider_chain: list[str],
 ) -> list[str]:
     """
     Бере аудіо з prefetch_task або генерує його вручну.
@@ -151,14 +147,24 @@ async def _get_audio_from_prefetch_or_generate(
                 "ReadingService: prefetch_task скасовано, генерую вручну user_id=%s",
                 user_id,
             )
-            audio_files = await generate_voice(chunk_text, voice, rate)
+            audio_files = await generate_voice(
+                chunk_text,
+                voice,
+                rate,
+                provider_chain=provider_chain,
+            )
 
         except Exception:
             logger.exception(
                 "ReadingService: помилка prefetch_task, генерую вручну user_id=%s",
                 user_id,
             )
-            audio_files = await generate_voice(chunk_text, voice, rate)
+            audio_files = await generate_voice(
+                chunk_text,
+                voice,
+                rate,
+                provider_chain=provider_chain,
+            )
 
         await update_reading_session(user_id, prefetch_task=None)
         await safe_delete_message(status_msg)
@@ -167,7 +173,12 @@ async def _get_audio_from_prefetch_or_generate(
     status_msg = await message.answer("⏳ Генерую аудіо.")
 
     try:
-        audio_files = await generate_voice(chunk_text, voice, rate)
+        audio_files = await generate_voice(
+            chunk_text,
+            voice,
+            rate,
+            provider_chain=provider_chain,
+        )
         return audio_files
 
     finally:
@@ -181,6 +192,7 @@ async def _start_prefetch_next_chunk(
     next_index: int,
     voice_pref: str,
     rate: str,
+    tts_provider: str,
 ) -> None:
     """
     Запускає фонову генерацію наступної частини.
@@ -190,12 +202,17 @@ async def _start_prefetch_next_chunk(
 
     next_chunk = chunks[next_index]
     next_voice = select_voice_for_text(next_chunk, voice_pref)
+    provider_chain = build_user_tts_provider_chain(
+        tts_provider,
+        voice=next_voice,
+    )
 
     prefetch_task = asyncio.create_task(
         generate_voice(
             text=next_chunk,
             voice=next_voice,
             rate=rate,
+            provider_chain=provider_chain,
         )
     )
 
@@ -232,7 +249,9 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
     chunk_text = chunks[index]
 
     voice_pref, rate = await get_effective_user_settings(user_id)
+    tts_provider = await get_effective_user_tts_provider(user_id)
     voice = select_voice_for_text(chunk_text, voice_pref)
+    provider_chain = build_user_tts_provider_chain(tts_provider, voice=voice)
 
     try:
         audio_files = await _get_audio_from_prefetch_or_generate(
@@ -242,6 +261,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             chunk_text=chunk_text,
             voice=voice,
             rate=rate,
+            provider_chain=provider_chain,
         )
 
         if not audio_files:
@@ -286,6 +306,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             next_index=new_index,
             voice_pref=voice_pref,
             rate=rate,
+            tts_provider=tts_provider,
         )
 
     except Exception:

@@ -10,14 +10,18 @@ from aiogram.types import Message
 from keyboards.catalog import (
     CATALOG_DELETE_PREFIX,
     CATALOG_OPEN_PREFIX,
+    CATALOG_PAGE_PREFIX,
     CATALOG_UNAVAILABLE_PREFIX,
     catalog_keyboard,
+    parse_catalog_page,
     parse_catalog_document_id,
 )
 from services.document_history_service import (
     clear_document_history,
+    count_recent_document_history,
     delete_catalog_document,
     get_catalog_document_chunks,
+    DEFAULT_HISTORY_LIMIT,
     get_recent_document_history,
 )
 from services.reading_service import (
@@ -44,18 +48,60 @@ from texts.catalog import (
 router = Router()
 logger = logging.getLogger(__name__)
 
+CATALOG_PAGE_SIZE = DEFAULT_HISTORY_LIMIT
+
 
 def _generate_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-async def _send_catalog(message: Message, user_id: int) -> None:
+def _clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
+    total_pages = max((total_items + page_size - 1) // page_size, 1)
+    page = min(max(page, 0), total_pages - 1)
+
+    return page, total_pages
+
+
+async def _get_catalog_page(
+    user_id: int,
+    page: int
+) -> tuple[list[dict], int, int, int]:
+    total_items = await count_recent_document_history(user_id=user_id)
+    page, total_pages = _clamp_page(
+        page=page,
+        total_items=total_items,
+        page_size=CATALOG_PAGE_SIZE,
+    )
+    items = await get_recent_document_history(
+        user_id=user_id,
+        limit=CATALOG_PAGE_SIZE,
+        offset=page * CATALOG_PAGE_SIZE,
+    )
+
+    return items, page, total_pages, total_items
+
+
+async def _send_catalog(message: Message, user_id: int, page: int = 0) -> None:
     """
     Надсилає каталог користувачу.
     """
-    items = await get_recent_document_history(user_id=user_id)
-    text = build_catalog_text(items)
-    keyboard = catalog_keyboard(items)
+    items, page, total_pages, total_items = await _get_catalog_page(
+        user_id=user_id,
+        page=page,
+    )
+    text = build_catalog_text(
+        items,
+        page=page,
+        total_pages=total_pages,
+        total_items=total_items,
+        page_size=CATALOG_PAGE_SIZE,
+    )
+    keyboard = catalog_keyboard(
+        items,
+        page=page,
+        total_pages=total_pages,
+        page_size=CATALOG_PAGE_SIZE,
+    )
 
     await message.answer(
         text,
@@ -64,15 +110,33 @@ async def _send_catalog(message: Message, user_id: int) -> None:
     )
 
 
-async def _refresh_catalog_message(message: Message, user_id: int) -> None:
+async def _refresh_catalog_message(
+    message: Message,
+    user_id: int,
+    page: int = 0
+) -> None:
     """
     Оновлює вже існуюче повідомлення каталогу після видалення документа.
 
     Якщо редагування не вдалося — надсилає каталог новим повідомленням.
     """
-    items = await get_recent_document_history(user_id=user_id)
-    text = build_catalog_text(items)
-    keyboard = catalog_keyboard(items)
+    items, page, total_pages, total_items = await _get_catalog_page(
+        user_id=user_id,
+        page=page,
+    )
+    text = build_catalog_text(
+        items,
+        page=page,
+        total_pages=total_pages,
+        total_items=total_items,
+        page_size=CATALOG_PAGE_SIZE,
+    )
+    keyboard = catalog_keyboard(
+        items,
+        page=page,
+        total_pages=total_pages,
+        page_size=CATALOG_PAGE_SIZE,
+    )
 
     try:
         await message.edit_text(
@@ -97,6 +161,26 @@ async def catalog_handler(message: Message) -> None:
     """
     user_id = message.from_user.id
     await _send_catalog(message, user_id)
+
+
+@router.callback_query(F.data.startswith(CATALOG_PAGE_PREFIX))
+async def catalog_page_callback(callback: types.CallbackQuery) -> None:
+    """
+    Перемикає сторінки каталогу в тому самому повідомленні.
+    """
+    user_id = callback.from_user.id
+    page = parse_catalog_page(callback.data, CATALOG_PAGE_PREFIX)
+
+    if page is None:
+        await callback.answer(CATALOG_DOCUMENT_NOT_FOUND_TEXT, show_alert=True)
+        return
+
+    await _refresh_catalog_message(
+        message=callback.message,
+        user_id=user_id,
+        page=page,
+    )
+    await callback.answer()
 
 
 @router.message(Command("catalog_clear"))
@@ -221,7 +305,10 @@ async def delete_catalog_document_handler(callback: types.CallbackQuery) -> None
 
     await callback.answer(CATALOG_DOCUMENT_DELETED_TEXT)
 
+    page = parse_catalog_page(callback.data, CATALOG_DELETE_PREFIX) or 0
+
     await _refresh_catalog_message(
         message=callback.message,
-        user_id=user_id
+        user_id=user_id,
+        page=page,
     )

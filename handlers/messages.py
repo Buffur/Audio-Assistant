@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 
 from aiogram import Router, types
@@ -29,6 +30,7 @@ from texts.messages import (
     GENERIC_TEXT_EXTRACT_ERROR,
     TEXT_SPLIT_ERROR,
     UNKNOWN_COMMAND_TEXT,
+    UNSUPPORTED_MESSAGE_TEXT,
     build_large_text_split_text,
     build_text_was_limited_text,
 )
@@ -39,9 +41,11 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 MAX_EXTRACTED_TEXT_LENGTH = 60000
+UNSUPPORTED_MESSAGE_WARNING_COOLDOWN_SECONDS = 30
 
 _user_processing_locks: dict[int, asyncio.Lock] = {}
 _user_processing_lock_usage: dict[int, int] = {}
+_last_unsupported_message_warning_time: dict[int, float] = {}
 
 
 def _reserve_user_processing_lock(user_id: int) -> asyncio.Lock:
@@ -80,11 +84,54 @@ def _limit_extracted_text(text: str) -> tuple[str, bool]:
     return text[:MAX_EXTRACTED_TEXT_LENGTH].strip(), True
 
 
+def _is_supported_processing_message(message: types.Message) -> bool:
+    return bool(
+        getattr(message, "text", None)
+        or getattr(message, "photo", None)
+        or getattr(message, "document", None)
+    )
+
+
+def _can_send_unsupported_message_warning(user_id: int, now: float) -> bool:
+    last_warning_time = _last_unsupported_message_warning_time.get(user_id)
+
+    if last_warning_time is None:
+        _last_unsupported_message_warning_time[user_id] = now
+        return True
+
+    if now - last_warning_time >= UNSUPPORTED_MESSAGE_WARNING_COOLDOWN_SECONDS:
+        _last_unsupported_message_warning_time[user_id] = now
+        return True
+
+    return False
+
+
+async def _handle_unsupported_message(
+    message: types.Message,
+    user_id: int
+) -> None:
+    now = time.monotonic()
+
+    if not _can_send_unsupported_message_warning(user_id, now):
+        logger.info(
+            "Messages: unsupported message silently ignored user_id=%s message_id=%s",
+            user_id,
+            getattr(message, "message_id", None),
+        )
+        return
+
+    await message.answer(UNSUPPORTED_MESSAGE_TEXT)
+
+
 def _generate_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
 async def _process_message(message: types.Message, user_id: int) -> None:
+    if not _is_supported_processing_message(message):
+        await _handle_unsupported_message(message, user_id)
+        return
+
     await cleanup_session(user_id)
 
     if message.text and message.text.startswith("/"):

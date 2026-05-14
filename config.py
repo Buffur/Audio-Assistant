@@ -1,10 +1,12 @@
 # Файл: config.py
 
+import json
+import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, ValidationError, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE_PATH = BASE_DIR / ".env"
@@ -24,7 +26,42 @@ class Settings(BaseSettings):
     DEFAULT_VOICE: str = "uk-UA-PolinaNeural"
     DEFAULT_RATE: str = "+0%"
 
-    ADMIN_IDS: list[int] = Field(default_factory=list)
+    AI_PROVIDER_CHAIN: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    GEMINI_TEXT_MODEL: str = "gemini-3.1-flash-lite-preview"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen3:8b"
+    OLLAMA_TIMEOUT_SECONDS: int = 120
+    OLLAMA_NUM_CTX: int = 16_384
+    OLLAMA_KEEP_ALIVE: str = "10m"
+
+    GEMINI_REQUEST_TIMEOUT_SECONDS: int = 45
+    GEMINI_RETRY_ATTEMPTS: int = 2
+    GEMINI_RETRY_BASE_DELAY_SECONDS: float = 1.0
+    GEMINI_RETRY_MAX_DELAY_SECONDS: float = 6.0
+
+    GEMINI_OCR_MODEL: str = "gemini-3.1-flash-lite-preview"
+    OCR_MIN_TEXT_LENGTH: int = 12
+
+    TTS_PROVIDER: str = "edge"
+    TTS_PROVIDER_CHAIN: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    GEMINI_TTS_MODEL: str = "gemini-3.1-flash-tts-preview"
+    GEMINI_TTS_VOICE: str = "Kore"
+    GEMINI_TTS_FEMALE_VOICE: str = "Kore"
+    GEMINI_TTS_MALE_VOICE: str = "Charon"
+    GEMINI_TTS_STYLE_PROMPT: str = (
+        "Read this Ukrainian text clearly and naturally. "
+        "Keep a calm, friendly pace."
+    )
+    PIPER_EXECUTABLE: str = "piper"
+    PIPER_MODELS_DIR: str = str(BASE_DIR / "data" / "piper")
+    PIPER_MODEL_PATH: str = ""
+    PIPER_CONFIG_PATH: str = ""
+    PIPER_LANGUAGE_MODELS_JSON: str = ""
+    PIPER_SPEAKER: int | None = None
+    PIPER_LENGTH_SCALE: float = 1.0
+    PIPER_TIMEOUT_SECONDS: int = 60
+
+    ADMIN_IDS: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
     DB_PATH: str = "bot_database.sqlite"
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -32,11 +69,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_MAX_EVENTS: int = 8
     RATE_LIMIT_PERIOD_SECONDS: int = 10
     RATE_LIMIT_WARNING_COOLDOWN_SECONDS: int = 10
+    RATE_LIMIT_BACKEND: str = "memory"
 
-    READING_SESSION_TTL_SECONDS: int = 3600
+    READING_SESSION_TTL_SECONDS: int = 45 * 60
 
     AUDIO_CACHE_ENABLED: bool = True
     AUDIO_CACHE_DIR: str = str(BASE_DIR / "data" / "audio_cache")
+    AUDIO_CACHE_MAX_SIZE_MB: int = 1024
+    AUDIO_CACHE_MAX_AGE_DAYS: int = 30
+    AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS: int = 60 * 60
 
     FREE_DAILY_TEXT_MESSAGE_LIMIT: int = 100
     FREE_DAILY_FILE_LIMIT: int = 10
@@ -74,8 +115,25 @@ class Settings(BaseSettings):
                 return []
 
             admin_ids: list[int] = []
+            value = value.strip()
 
-            for item in value.split(","):
+            if value.startswith("["):
+                try:
+                    parsed_value = json.loads(value)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        "ADMIN_IDS JSON list is invalid. "
+                        "Use [123,456] or 123,456."
+                    ) from error
+
+                if not isinstance(parsed_value, list):
+                    raise ValueError(
+                        "ADMIN_IDS JSON value must be a list of numeric Telegram user IDs"
+                    )
+
+                return [int(item) for item in parsed_value]
+
+            for item in re.split(r"[\s,;]+", value):
                 item = item.strip()
 
                 if not item:
@@ -116,9 +174,137 @@ class Settings(BaseSettings):
         "FREE_DAILY_OCR_LIMIT",
         "FREE_DAILY_LINK_LIMIT",
         "FREE_DAILY_SUMMARY_LIMIT",
+        "OLLAMA_TIMEOUT_SECONDS",
+        "OLLAMA_NUM_CTX",
+        "GEMINI_REQUEST_TIMEOUT_SECONDS",
+        "GEMINI_RETRY_ATTEMPTS",
+        "OCR_MIN_TEXT_LENGTH",
+        "PIPER_TIMEOUT_SECONDS",
+        "AUDIO_CACHE_MAX_SIZE_MB",
+        "AUDIO_CACHE_MAX_AGE_DAYS",
+        "AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS",
     )
     @classmethod
     def _validate_positive_int(cls, value: int, info: Any) -> int:
+        if value <= 0:
+            raise ValueError(f"{info.field_name} must be greater than 0")
+
+        return value
+
+    @field_validator("AI_PROVIDER_CHAIN", mode="before")
+    @classmethod
+    def _parse_ai_provider_chain(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+
+            providers = re.split(r"[\s,;]+", value.strip())
+
+        elif isinstance(value, (list, tuple)):
+            providers = [str(item) for item in value]
+
+        else:
+            raise ValueError(
+                "AI_PROVIDER_CHAIN must be a comma-separated string or list"
+            )
+
+        normalized_providers: list[str] = []
+
+        for provider in providers:
+            provider = provider.strip().lower()
+
+            if not provider:
+                continue
+
+            if provider not in {"ollama", "gemini"}:
+                raise ValueError(
+                    "AI_PROVIDER_CHAIN must contain only ollama or gemini"
+                )
+
+            if provider not in normalized_providers:
+                normalized_providers.append(provider)
+
+        return normalized_providers
+
+    @field_validator("RATE_LIMIT_BACKEND")
+    @classmethod
+    def _validate_rate_limit_backend(cls, value: str) -> str:
+        value = value.strip().lower()
+
+        if value not in {"memory", "redis"}:
+            raise ValueError("RATE_LIMIT_BACKEND must be 'memory' or 'redis'")
+
+        return value
+
+    @field_validator("TTS_PROVIDER")
+    @classmethod
+    def _validate_tts_provider(cls, value: str) -> str:
+        value = value.strip().lower()
+
+        if value not in {"edge", "gemini", "piper"}:
+            raise ValueError("TTS_PROVIDER must be 'edge', 'gemini', or 'piper'")
+
+        return value
+
+    @field_validator("TTS_PROVIDER_CHAIN", mode="before")
+    @classmethod
+    def _parse_tts_provider_chain(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+
+            providers = re.split(r"[\s,;]+", value.strip())
+
+        elif isinstance(value, (list, tuple)):
+            providers = [str(item) for item in value]
+
+        else:
+            raise ValueError(
+                "TTS_PROVIDER_CHAIN must be a comma-separated string or list"
+            )
+
+        normalized_providers: list[str] = []
+
+        for provider in providers:
+            provider = provider.strip().lower()
+
+            if not provider:
+                continue
+
+            if provider not in {"edge", "gemini", "piper"}:
+                raise ValueError(
+                    "TTS_PROVIDER_CHAIN must contain only edge, gemini, or piper"
+                )
+
+            if provider not in normalized_providers:
+                normalized_providers.append(provider)
+
+        return normalized_providers
+
+    @field_validator("PIPER_SPEAKER", mode="before")
+    @classmethod
+    def _parse_optional_int(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        return value
+
+    @field_validator(
+        "GEMINI_RETRY_BASE_DELAY_SECONDS",
+        "GEMINI_RETRY_MAX_DELAY_SECONDS",
+        "PIPER_LENGTH_SCALE",
+    )
+    @classmethod
+    def _validate_positive_float(cls, value: float, info: Any) -> float:
         if value <= 0:
             raise ValueError(f"{info.field_name} must be greater than 0")
 
@@ -144,6 +330,38 @@ GEMINI_API_KEY = settings.GEMINI_API_KEY
 DEFAULT_VOICE = settings.DEFAULT_VOICE
 DEFAULT_RATE = settings.DEFAULT_RATE
 
+AI_PROVIDER_CHAIN = settings.AI_PROVIDER_CHAIN
+GEMINI_TEXT_MODEL = settings.GEMINI_TEXT_MODEL
+OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
+OLLAMA_MODEL = settings.OLLAMA_MODEL
+OLLAMA_TIMEOUT_SECONDS = settings.OLLAMA_TIMEOUT_SECONDS
+OLLAMA_NUM_CTX = settings.OLLAMA_NUM_CTX
+OLLAMA_KEEP_ALIVE = settings.OLLAMA_KEEP_ALIVE
+
+GEMINI_REQUEST_TIMEOUT_SECONDS = settings.GEMINI_REQUEST_TIMEOUT_SECONDS
+GEMINI_RETRY_ATTEMPTS = settings.GEMINI_RETRY_ATTEMPTS
+GEMINI_RETRY_BASE_DELAY_SECONDS = settings.GEMINI_RETRY_BASE_DELAY_SECONDS
+GEMINI_RETRY_MAX_DELAY_SECONDS = settings.GEMINI_RETRY_MAX_DELAY_SECONDS
+
+GEMINI_OCR_MODEL = settings.GEMINI_OCR_MODEL
+OCR_MIN_TEXT_LENGTH = settings.OCR_MIN_TEXT_LENGTH
+
+TTS_PROVIDER = settings.TTS_PROVIDER
+TTS_PROVIDER_CHAIN = settings.TTS_PROVIDER_CHAIN
+GEMINI_TTS_MODEL = settings.GEMINI_TTS_MODEL
+GEMINI_TTS_VOICE = settings.GEMINI_TTS_VOICE
+GEMINI_TTS_FEMALE_VOICE = settings.GEMINI_TTS_FEMALE_VOICE
+GEMINI_TTS_MALE_VOICE = settings.GEMINI_TTS_MALE_VOICE
+GEMINI_TTS_STYLE_PROMPT = settings.GEMINI_TTS_STYLE_PROMPT
+PIPER_EXECUTABLE = settings.PIPER_EXECUTABLE
+PIPER_MODELS_DIR = settings.PIPER_MODELS_DIR
+PIPER_MODEL_PATH = settings.PIPER_MODEL_PATH
+PIPER_CONFIG_PATH = settings.PIPER_CONFIG_PATH
+PIPER_LANGUAGE_MODELS_JSON = settings.PIPER_LANGUAGE_MODELS_JSON
+PIPER_SPEAKER = settings.PIPER_SPEAKER
+PIPER_LENGTH_SCALE = settings.PIPER_LENGTH_SCALE
+PIPER_TIMEOUT_SECONDS = settings.PIPER_TIMEOUT_SECONDS
+
 ADMIN_IDS = settings.ADMIN_IDS
 
 DB_PATH = settings.DB_PATH
@@ -154,11 +372,17 @@ RATE_LIMIT_PERIOD_SECONDS = settings.RATE_LIMIT_PERIOD_SECONDS
 RATE_LIMIT_WARNING_COOLDOWN_SECONDS = (
     settings.RATE_LIMIT_WARNING_COOLDOWN_SECONDS
 )
+RATE_LIMIT_BACKEND = settings.RATE_LIMIT_BACKEND
 
 READING_SESSION_TTL_SECONDS = settings.READING_SESSION_TTL_SECONDS
 
 AUDIO_CACHE_ENABLED = settings.AUDIO_CACHE_ENABLED
 AUDIO_CACHE_DIR = settings.AUDIO_CACHE_DIR
+AUDIO_CACHE_MAX_SIZE_MB = settings.AUDIO_CACHE_MAX_SIZE_MB
+AUDIO_CACHE_MAX_AGE_DAYS = settings.AUDIO_CACHE_MAX_AGE_DAYS
+AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS = (
+    settings.AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS
+)
 
 FREE_DAILY_TEXT_MESSAGE_LIMIT = settings.FREE_DAILY_TEXT_MESSAGE_LIMIT
 FREE_DAILY_FILE_LIMIT = settings.FREE_DAILY_FILE_LIMIT

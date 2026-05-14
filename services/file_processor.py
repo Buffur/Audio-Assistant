@@ -8,7 +8,8 @@ from docx import Document
 
 logger = logging.getLogger(__name__)
 
-TXT_ENCODINGS = ("utf-8", "utf-8-sig", "cp1251")
+TXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp1251")
+PDF_TEXT_SOFT_LIMIT = 60_001
 
 
 def _join_clean_text_blocks(blocks: Iterable[str], separator: str = "\n") -> str:
@@ -82,11 +83,26 @@ def process_pdf(file_path: str) -> str:
         doc = fitz.open(file_path)
 
         text_blocks = []
+        extracted_length = 0
 
         for page in doc:
             page_text = page.get_text()
             if page_text and page_text.strip():
-                text_blocks.append(page_text)
+                remaining_length = PDF_TEXT_SOFT_LIMIT - extracted_length
+
+                if remaining_length <= 0:
+                    break
+
+                limited_page_text = page_text[:remaining_length]
+                text_blocks.append(limited_page_text)
+                extracted_length += len(limited_page_text)
+
+                if extracted_length >= PDF_TEXT_SOFT_LIMIT:
+                    logger.info(
+                        "PDF text extraction soft limit reached for file: %s",
+                        file_path,
+                    )
+                    break
 
         text = _join_clean_text_blocks(text_blocks, separator="\n\n")
 
@@ -108,7 +124,7 @@ def process_txt(file_path: str) -> str:
     """
     Витягує текст із TXT-файлу.
 
-    Спочатку пробує UTF-8, потім UTF-8 з BOM,
+    Спочатку пробує UTF-8 з BOM, потім звичайний UTF-8,
     потім CP1251 для старих кириличних файлів.
     """
     last_error = None

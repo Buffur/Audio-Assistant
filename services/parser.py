@@ -10,10 +10,11 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
-from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY
+from config import AI_PROVIDER_CHAIN, GEMINI_TEXT_MODEL
+from services.gemini_client import generate_gemini_content
+from services.ollama_ai import generate_ollama_text
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ MAX_RAW_TEXT_FOR_AI = 30_000
 MIN_ARTICLE_LENGTH = 50
 MAX_REDIRECTS = 5
 
-AI_MODEL = "gemini-3.1-flash-lite-preview"
+AI_MODEL = GEMINI_TEXT_MODEL
+AI_PROVIDER_NAMES = {"ollama", "gemini"}
 
 HEADERS = {
     "User-Agent": (
@@ -43,17 +45,6 @@ HEADERS = {
 }
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-
-
-# ============================================================
-# GEMINI CLIENT
-# ============================================================
-
-try:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    logger.error("Не вдалося ініціалізувати Gemini client: %s", e)
-    ai_client = None
 
 
 # ============================================================
@@ -324,21 +315,79 @@ def _strip_ai_output(text: str) -> str:
     return _normalize_whitespace(text)
 
 
+def _ai_provider_chain() -> list[str]:
+    providers = AI_PROVIDER_CHAIN or ["gemini"]
+    normalized_providers: list[str] = []
+
+    for provider in providers:
+        provider = provider.strip().lower()
+
+        if provider not in AI_PROVIDER_NAMES:
+            continue
+
+        if provider not in normalized_providers:
+            normalized_providers.append(provider)
+
+    return normalized_providers or ["gemini"]
+
+
+async def _generate_text_with_gemini(prompt: str, temperature: float) -> str | None:
+    response = await generate_gemini_content(
+        model=AI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+        ),
+        context="parser",
+    )
+
+    return _strip_ai_output(response.text or "")
+
+
+async def _generate_text_with_ollama(prompt: str, temperature: float) -> str | None:
+    result = await generate_ollama_text(
+        prompt=prompt,
+        temperature=temperature,
+    )
+
+    return _strip_ai_output(result)
+
+
+async def _generate_ai_text(prompt: str, temperature: float) -> str | None:
+    provider_errors: list[str] = []
+
+    for provider in _ai_provider_chain():
+        try:
+            if provider == "ollama":
+                result = await _generate_text_with_ollama(prompt, temperature)
+            else:
+                result = await _generate_text_with_gemini(prompt, temperature)
+
+            if result:
+                logger.info("AI provider=%s успішно повернув текст.", provider)
+                return result
+
+            provider_errors.append(f"{provider}: empty response")
+
+        except Exception as error:
+            provider_errors.append(f"{provider}: {error}")
+            logger.warning("AI provider=%s недоступний: %s", provider, error)
+
+    logger.error("Усі AI provider недоступні: %s", "; ".join(provider_errors))
+    return None
+
+
 # ============================================================
 # AI EXTRACTION
 # ============================================================
 
 async def _extract_with_ai(raw_text: str) -> Optional[str]:
     """
-    Спроба витягти основний текст статті за допомогою Gemini.
+    Спроба витягти основний текст статті за допомогою AI provider chain.
 
     Якщо AI недоступний або повертає поганий результат —
     повертає None, після чого parse_article використовує fallback-парсер.
     """
-    if not ai_client:
-        logger.warning("Gemini client недоступний.")
-        return None
-
     if not raw_text or len(raw_text.strip()) < 100:
         return None
 
@@ -363,17 +412,9 @@ async def _extract_with_ai(raw_text: str) -> Optional[str]:
 """
 
     try:
-        response = await ai_client.aio.models.generate_content(
-            model=AI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-            ),
-        )
+        result = await _generate_ai_text(prompt, temperature=0.1)
 
-        result = _strip_ai_output(response.text or "")
-
-        if len(result) < MIN_ARTICLE_LENGTH:
+        if not result or len(result) < MIN_ARTICLE_LENGTH:
             return None
 
         return result
@@ -927,9 +968,6 @@ async def summarize_text_with_ai(text: str) -> str:
     if not text or len(text.strip()) < 50:
         return "❌ Недостатньо тексту для короткого змісту."
 
-    if not ai_client:
-        return "❌ Не вдалося створити короткий зміст: AI-клієнт недоступний."
-
     prompt = f"""
 Ти — інструмент доступності для незрячих користувачів.
 Зроби дуже стислий, але інформативний переказ тексту.
@@ -943,15 +981,7 @@ async def summarize_text_with_ai(text: str) -> str:
 """
 
     try:
-        response = await ai_client.aio.models.generate_content(
-            model=AI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-            ),
-        )
-
-        result = _strip_ai_output(response.text or "")
+        result = await _generate_ai_text(prompt, temperature=0.2)
 
         if not result:
             return "❌ Не вдалося створити короткий зміст."

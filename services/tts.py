@@ -3,10 +3,21 @@
 import asyncio
 import logging
 import os
-from contextlib import suppress
 
 import edge_tts
 
+from config import (
+    GEMINI_TTS_MODEL,
+    GEMINI_TTS_STYLE_PROMPT,
+    TTS_PROVIDER,
+    TTS_PROVIDER_CHAIN,
+)
+from services.audio_cache import get_audio_from_cache, save_audio_to_cache
+from services.gemini_tts import generate_gemini_tts_ogg, get_gemini_tts_voice
+from services.piper_tts import (
+    generate_piper_tts_ogg,
+    get_piper_cache_voice_name,
+)
 from utils.audio import convert_to_ogg, create_temp_file_path, safe_remove_file
 from utils.splitter import split_text
 
@@ -17,6 +28,54 @@ TTS_RETRY_ATTEMPTS = 3
 TTS_RETRY_BASE_DELAY_SECONDS = 0.8
 
 tts_semaphore = asyncio.Semaphore(TTS_CONCURRENCY_LIMIT)
+
+TTS_PROVIDER_NAMES = {"edge", "gemini", "piper"}
+
+
+def _gemini_cache_voice_name(edge_voice: str) -> str:
+    return (
+        f"gemini:{GEMINI_TTS_MODEL}:"
+        f"{get_gemini_tts_voice(edge_voice)}:"
+        f"{GEMINI_TTS_STYLE_PROMPT}:"
+        f"{edge_voice}"
+    )
+
+
+def _piper_cache_voice_name(edge_voice: str) -> str:
+    return get_piper_cache_voice_name(edge_voice)
+
+
+def _provider_chain(provider_chain: list[str] | None = None) -> list[str]:
+    providers = list(provider_chain or TTS_PROVIDER_CHAIN)
+
+    if not providers:
+        providers = [TTS_PROVIDER]
+
+        if TTS_PROVIDER in {"gemini", "piper"}:
+            providers.append("edge")
+
+    normalized_providers: list[str] = []
+
+    for provider in providers:
+        provider = provider.strip().lower()
+
+        if provider not in TTS_PROVIDER_NAMES:
+            continue
+
+        if provider not in normalized_providers:
+            normalized_providers.append(provider)
+
+    return normalized_providers or ["edge"]
+
+
+def _cache_voice_for_provider(provider: str, voice: str) -> str:
+    if provider == "gemini":
+        return _gemini_cache_voice_name(voice)
+
+    if provider == "piper":
+        return _piper_cache_voice_name(voice)
+
+    return voice
 
 
 def _validate_tts_input(text: str, voice: str, rate: str) -> None:
@@ -124,11 +183,110 @@ async def _generate_chunk_voice(
     )
 
 
+async def _generate_chunk_voice_with_provider(
+    *,
+    provider: str,
+    chunk: str,
+    voice: str,
+    rate: str,
+    chunk_index: int,
+    chunks_count: int,
+) -> str:
+    if provider == "gemini":
+        return await generate_gemini_tts_ogg(
+            text=chunk,
+            voice=voice,
+            rate=rate,
+            chunk_index=chunk_index,
+            chunks_count=chunks_count,
+        )
+
+    if provider == "piper":
+        return await generate_piper_tts_ogg(
+            text=chunk,
+            voice=voice,
+            rate=rate,
+            chunk_index=chunk_index,
+            chunks_count=chunks_count,
+        )
+
+    if provider == "edge":
+        return await _generate_chunk_voice(
+            chunk=chunk,
+            voice=voice,
+            rate=rate,
+            chunk_index=chunk_index,
+            chunks_count=chunks_count,
+        )
+
+    raise RuntimeError(f"Unknown TTS provider: {provider}")
+
+
+async def _generate_chunk_voice_for_provider(
+    *,
+    chunk: str,
+    voice: str,
+    rate: str,
+    chunk_index: int,
+    chunks_count: int,
+    provider_chain: list[str] | None = None,
+) -> tuple[str, str, bool]:
+    providers = _provider_chain(provider_chain)
+    provider_errors: list[str] = []
+
+    for provider in providers:
+        cache_voice = _cache_voice_for_provider(provider, voice)
+        cached_audio_path = get_audio_from_cache(
+            text=chunk,
+            voice=cache_voice,
+            rate=rate,
+        )
+
+        if cached_audio_path:
+            logger.info(
+                "TTS: cache hit provider=%s chunk=%s/%s",
+                provider,
+                chunk_index,
+                chunks_count,
+            )
+            return cached_audio_path, cache_voice, True
+
+        try:
+            ogg_path = await _generate_chunk_voice_with_provider(
+                provider=provider,
+                chunk=chunk,
+                voice=voice,
+                rate=rate,
+                chunk_index=chunk_index,
+                chunks_count=chunks_count,
+            )
+            return ogg_path, cache_voice, False
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as error:
+            provider_errors.append(f"{provider}: {error}")
+
+            logger.exception(
+                "TTS: provider=%s впав, chunk=%s/%s",
+                provider,
+                chunk_index,
+                chunks_count,
+            )
+
+    details = "; ".join(provider_errors) or "no providers configured"
+    raise RuntimeError(
+        f"TTS не вдалося згенерувати chunk {chunk_index}/{chunks_count}: {details}"
+    )
+
+
 async def generate_voice(
     text: str,
     voice: str,
     rate: str,
     raise_on_error: bool = False,
+    provider_chain: list[str] | None = None,
 ) -> list[str]:
     """
     Генерує voice-файли для Telegram.
@@ -154,20 +312,34 @@ async def generate_voice(
             return []
 
         logger.info(
-            "TTS: старт генерації, chunks=%s, voice=%s, rate=%s",
+            "TTS: старт генерації, chunks=%s, voice=%s, rate=%s, providers=%s",
             len(chunks),
             voice,
             rate,
+            ",".join(_provider_chain(provider_chain)),
         )
 
         for index, chunk in enumerate(chunks, start=1):
             async with tts_semaphore:
-                ogg_path = await _generate_chunk_voice(
+                (
+                    ogg_path,
+                    cache_voice,
+                    cache_hit,
+                ) = await _generate_chunk_voice_for_provider(
                     chunk=chunk,
                     voice=voice,
                     rate=rate,
                     chunk_index=index,
                     chunks_count=len(chunks),
+                    provider_chain=provider_chain,
+                )
+
+            if not cache_hit:
+                save_audio_to_cache(
+                    text=chunk,
+                    voice=cache_voice,
+                    rate=rate,
+                    audio_path=ogg_path,
                 )
 
             generated_files.append(ogg_path)

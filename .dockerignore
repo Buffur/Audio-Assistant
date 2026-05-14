@@ -17,6 +17,10 @@ __pycache__/
 
 # Test / lint / type-check cache
 .pytest_cache/
+.pytest_cache_local/
+.pytest_cache_run/
+.pytest_tmp/
+.test_runtime/
 .mypy_cache/
 .ruff_cache/
 .coverage
