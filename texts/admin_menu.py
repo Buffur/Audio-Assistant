@@ -90,6 +90,63 @@ def build_admin_limit_edit_text(
     )
 
 
+SERVICE_PROVIDER_LABELS = {
+    "edge": "Edge TTS",
+    "gemini": "Gemini",
+    "piper": "Piper",
+}
+
+SERVICE_OPERATION_LABELS = {
+    "ocr": "фотографії",
+    "parser": "парсинг",
+    "tts": "TTS",
+}
+
+
+def _format_money(value: float) -> str:
+    return f"${value:.4f}"
+
+
+def _format_service_metrics(service_metrics: dict | None) -> str:
+    if not service_metrics or not service_metrics.get("total_requests"):
+        return (
+            "\n\n🔎 <b>Зовнішні сервіси за 24 год:</b>\n"
+            "Поки немає записаних запитів."
+        )
+
+    groups = service_metrics.get("groups", [])
+    parts = [
+        "\n\n🔎 <b>Зовнішні сервіси за 24 год:</b>",
+        (
+            f"Запитів: <b>{service_metrics['total_requests']}</b> | "
+            f"помилок: <b>{service_metrics['total_errors']}</b>"
+        ),
+        (
+            f"Latency avg/max: <b>{service_metrics['avg_latency_ms']} ms</b> / "
+            f"<b>{service_metrics['max_latency_ms']} ms</b>"
+        ),
+        f"Оцінка витрат: <b>{_format_money(service_metrics['estimated_cost_usd'])}</b>",
+    ]
+
+    for group in groups[:6]:
+        provider = SERVICE_PROVIDER_LABELS.get(
+            str(group.get("provider") or ""),
+            str(group.get("provider") or "unknown"),
+        )
+        operation = SERVICE_OPERATION_LABELS.get(
+            str(group.get("operation") or ""),
+            str(group.get("operation") or "unknown"),
+        )
+        parts.append(
+            f"• {html.escape(provider)} / {html.escape(operation)}: "
+            f"{group['requests']} req, {group['errors']} err, "
+            f"avg {group['avg_latency_ms']} ms, "
+            f"{_format_money(group['estimated_cost_usd'])}"
+        )
+
+    return "\n".join(parts)
+
+
 def build_admin_stats_text(
     total_users: int,
     active_users: int,
@@ -97,8 +154,9 @@ def build_admin_stats_text(
     free_users: int,
     premium_users: int,
     usage_totals: dict[str, int],
+    service_metrics: dict | None = None,
 ) -> str:
-    return (
+    text = (
         "📊 <b>Статистика проєкту</b>\n\n"
         "👥 <b>Користувачі:</b>\n"
         f"Усього: <b>{total_users}</b>\n"
@@ -113,6 +171,8 @@ def build_admin_stats_text(
         f"🔗 Посилання: <b>{usage_totals['links_processed']}</b>\n"
         f"📝 Короткі змісти: <b>{usage_totals['summaries_generated']}</b>"
     )
+
+    return text + _format_service_metrics(service_metrics)
 
 
 def build_admin_users_text(

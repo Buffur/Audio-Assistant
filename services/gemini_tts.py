@@ -12,10 +12,14 @@ from config import (
     GEMINI_TTS_FEMALE_VOICE,
     GEMINI_TTS_MALE_VOICE,
     GEMINI_TTS_MODEL,
+    GEMINI_TTS_MODEL_CHAIN,
     GEMINI_TTS_STYLE_PROMPT,
     GEMINI_TTS_VOICE,
 )
-from services.gemini_client import generate_gemini_content
+from services.gemini_client import (
+    generate_gemini_content_with_fallback,
+    normalize_model_chain,
+)
 from utils.audio import convert_to_ogg, create_temp_file_path, safe_remove_file
 
 logger = logging.getLogger(__name__)
@@ -64,6 +68,13 @@ def _build_gemini_tts_prompt(text: str, rate: str) -> str:
         return f"{rate_prompt}\n\n{text}"
 
     return f"{style_prompt} {rate_prompt}\n\n{text}"
+
+
+def gemini_tts_model_chain() -> list[str]:
+    return normalize_model_chain(
+        primary_model=GEMINI_TTS_MODEL,
+        fallback_models=GEMINI_TTS_MODEL_CHAIN,
+    )
 
 
 def _extract_audio_data(response) -> bytes:
@@ -115,16 +126,17 @@ async def generate_gemini_tts_ogg(
 
     try:
         logger.info(
-            "GeminiTTS: генерація chunk=%s/%s, model=%s, voice=%s, text_length=%s",
+            "GeminiTTS: генерація chunk=%s/%s, models=%s, voice=%s, text_length=%s",
             chunk_index,
             chunks_count,
-            GEMINI_TTS_MODEL,
+            ",".join(gemini_tts_model_chain()),
             gemini_voice,
             len(text),
         )
 
-        response = await generate_gemini_content(
-            model=GEMINI_TTS_MODEL,
+        response = await generate_gemini_content_with_fallback(
+            primary_model=GEMINI_TTS_MODEL,
+            fallback_models=GEMINI_TTS_MODEL_CHAIN,
             contents=_build_gemini_tts_prompt(text, rate),
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],

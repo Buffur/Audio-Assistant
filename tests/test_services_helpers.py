@@ -133,6 +133,7 @@ async def test_user_settings_service_defaults_and_validation(monkeypatch) -> Non
         "piper",
         "edge",
     ]
+    assert user_settings_service.get_tts_provider_display("piper") == "Piper"
     monkeypatch.setattr(
         user_settings_service,
         "is_piper_voice_configured",

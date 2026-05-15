@@ -37,6 +37,20 @@ def test_get_gemini_tts_voice_uses_edge_voice_gender(monkeypatch) -> None:
     assert gemini_tts.get_gemini_tts_voice("en-US-GuyNeural") == "Charon"
 
 
+def test_gemini_tts_model_chain_uses_primary_and_fallbacks(monkeypatch) -> None:
+    monkeypatch.setattr(gemini_tts, "GEMINI_TTS_MODEL", "gemini-primary-tts")
+    monkeypatch.setattr(
+        gemini_tts,
+        "GEMINI_TTS_MODEL_CHAIN",
+        ["gemini-fallback-tts", "gemini-primary-tts"],
+    )
+
+    assert gemini_tts.gemini_tts_model_chain() == [
+        "gemini-primary-tts",
+        "gemini-fallback-tts",
+    ]
+
+
 def test_extract_audio_data_supports_bytes() -> None:
     response = _audio_response(b"audio")
 

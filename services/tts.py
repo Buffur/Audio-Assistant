@@ -3,21 +3,29 @@
 import asyncio
 import logging
 import os
+import time
 
 import edge_tts
 
 from config import (
     GEMINI_TTS_MODEL,
+    GEMINI_TTS_MODEL_CHAIN,
     GEMINI_TTS_STYLE_PROMPT,
     TTS_PROVIDER,
     TTS_PROVIDER_CHAIN,
 )
 from services.audio_cache import get_audio_from_cache, save_audio_to_cache
+from services.gemini_client import (
+    GeminiFallbackExhaustedError,
+    GeminiModelUnavailableError,
+    GeminiQuotaExceededError,
+)
 from services.gemini_tts import generate_gemini_tts_ogg, get_gemini_tts_voice
 from services.piper_tts import (
     generate_piper_tts_ogg,
     get_piper_cache_voice_name,
 )
+from services.telemetry_service import record_service_metric
 from utils.audio import convert_to_ogg, create_temp_file_path, safe_remove_file
 from utils.splitter import split_text
 
@@ -32,9 +40,24 @@ tts_semaphore = asyncio.Semaphore(TTS_CONCURRENCY_LIMIT)
 TTS_PROVIDER_NAMES = {"edge", "gemini", "piper"}
 
 
+def _is_expected_provider_failure(error: Exception) -> bool:
+    return isinstance(
+        error,
+        (
+            GeminiFallbackExhaustedError,
+            GeminiModelUnavailableError,
+            GeminiQuotaExceededError,
+        ),
+    )
+
+
 def _gemini_cache_voice_name(edge_voice: str) -> str:
+    model_chain = ",".join(
+        [GEMINI_TTS_MODEL, *GEMINI_TTS_MODEL_CHAIN]
+    )
+
     return (
-        f"gemini:{GEMINI_TTS_MODEL}:"
+        f"gemini:{model_chain}:"
         f"{get_gemini_tts_voice(edge_voice)}:"
         f"{GEMINI_TTS_STYLE_PROMPT}:"
         f"{edge_voice}"
@@ -251,6 +274,8 @@ async def _generate_chunk_voice_for_provider(
             )
             return cached_audio_path, cache_voice, True
 
+        started_at = time.perf_counter()
+
         try:
             ogg_path = await _generate_chunk_voice_with_provider(
                 provider=provider,
@@ -260,20 +285,51 @@ async def _generate_chunk_voice_for_provider(
                 chunk_index=chunk_index,
                 chunks_count=chunks_count,
             )
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+
+            if provider != "gemini":
+                await record_service_metric(
+                    provider=provider,
+                    operation="tts",
+                    success=True,
+                    latency_ms=elapsed_ms,
+                    input_units=len(chunk),
+                )
+
             return ogg_path, cache_voice, False
 
         except asyncio.CancelledError:
             raise
 
         except Exception as error:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+
+            if provider != "gemini":
+                await record_service_metric(
+                    provider=provider,
+                    operation="tts",
+                    success=False,
+                    latency_ms=elapsed_ms,
+                    input_units=len(chunk),
+                    error=error,
+                )
+
             provider_errors.append(f"{provider}: {error}")
 
-            logger.exception(
-                "TTS: provider=%s впав, chunk=%s/%s",
-                provider,
-                chunk_index,
-                chunks_count,
-            )
+            if _is_expected_provider_failure(error):
+                logger.warning(
+                    "TTS: provider=%s skipped by quota, chunk=%s/%s, fallback continues",
+                    provider,
+                    chunk_index,
+                    chunks_count,
+                )
+            else:
+                logger.exception(
+                    "TTS: provider=%s впав, chunk=%s/%s",
+                    provider,
+                    chunk_index,
+                    chunks_count,
+                )
 
     details = "; ".join(provider_errors) or "no providers configured"
     raise RuntimeError(

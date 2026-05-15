@@ -130,6 +130,32 @@ async def init_db() -> None:
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS service_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                input_units INTEGER NOT NULL DEFAULT 0,
+                output_units INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                error_type TEXT,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_service_metrics_created
+            ON service_metrics (created_at DESC)
+        """)
+
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_service_metrics_provider_operation_created
+            ON service_metrics (provider, operation, created_at DESC)
+        """)
+
         usage_columns = {
             "text_messages_processed": "INTEGER NOT NULL DEFAULT 0",
             "files_processed": "INTEGER NOT NULL DEFAULT 0",
@@ -750,3 +776,200 @@ async def clear_user_document_history(user_id: int) -> None:
             (user_id,),
         )
         await db.commit()
+
+
+async def delete_document_history_older_than(days: int) -> int:
+    days = max(int(days), 1)
+
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM document_history
+            WHERE created_at < datetime('now', ?)
+            """,
+            (f"-{days} days",),
+        )
+        await db.commit()
+
+    return int(cursor.rowcount or 0)
+
+
+async def delete_user_private_data(user_id: int) -> dict[str, int]:
+    async with get_db_connection() as db:
+        document_cursor = await db.execute(
+            "DELETE FROM document_history WHERE user_id = ?",
+            (user_id,),
+        )
+        usage_cursor = await db.execute(
+            "DELETE FROM usage_daily WHERE user_id = ?",
+            (user_id,),
+        )
+        user_cursor = await db.execute(
+            """
+            UPDATE users
+            SET
+                username = 'N/A',
+                full_name = 'N/A',
+                voice = NULL,
+                rate = NULL,
+                tts_provider = NULL,
+                last_activity = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        await db.commit()
+
+    return {
+        "document_history": int(document_cursor.rowcount or 0),
+        "usage_daily": int(usage_cursor.rowcount or 0),
+        "user_settings": int(user_cursor.rowcount or 0),
+    }
+
+
+async def add_service_metric(
+    provider: str,
+    operation: str,
+    success: bool,
+    latency_ms: int = 0,
+    input_units: int = 0,
+    output_units: int = 0,
+    estimated_cost_usd: float = 0.0,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    created_at: str | None = None,
+) -> int:
+    provider = provider.strip().lower()
+    operation = operation.strip().lower()
+    latency_ms = max(int(latency_ms), 0)
+    input_units = max(int(input_units), 0)
+    output_units = max(int(output_units), 0)
+    estimated_cost_usd = max(float(estimated_cost_usd), 0.0)
+
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO service_metrics (
+                provider,
+                operation,
+                success,
+                latency_ms,
+                input_units,
+                output_units,
+                estimated_cost_usd,
+                error_type,
+                error_message,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (
+                provider,
+                operation,
+                1 if success else 0,
+                latency_ms,
+                input_units,
+                output_units,
+                estimated_cost_usd,
+                error_type,
+                error_message[:500] if error_message else None,
+                created_at,
+            ),
+        )
+        await db.commit()
+
+    return int(cursor.lastrowid)
+
+
+async def get_service_metrics_summary(days: int = 1) -> dict[str, Any]:
+    days = max(int(days), 1)
+    since_modifier = f"-{days} days"
+
+    async with get_db_connection() as db:
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
+                AVG(latency_ms),
+                MAX(latency_ms),
+                SUM(input_units),
+                SUM(output_units),
+                SUM(estimated_cost_usd)
+            FROM service_metrics
+            WHERE created_at >= datetime('now', ?)
+            """,
+            (since_modifier,),
+        ) as cursor:
+            total_row = await cursor.fetchone()
+
+        async with db.execute(
+            """
+            SELECT
+                provider,
+                operation,
+                COUNT(*),
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
+                AVG(latency_ms),
+                MAX(latency_ms),
+                SUM(input_units),
+                SUM(output_units),
+                SUM(estimated_cost_usd)
+            FROM service_metrics
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY provider, operation
+            ORDER BY SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) DESC,
+                     COUNT(*) DESC,
+                     provider ASC,
+                     operation ASC
+            """,
+            (since_modifier,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    total_row = total_row or (0, 0, 0, 0, 0, 0, 0, 0)
+
+    return {
+        "period_days": days,
+        "total_requests": int(total_row[0] or 0),
+        "total_success": int(total_row[1] or 0),
+        "total_errors": int(total_row[2] or 0),
+        "avg_latency_ms": int(total_row[3] or 0),
+        "max_latency_ms": int(total_row[4] or 0),
+        "input_units": int(total_row[5] or 0),
+        "output_units": int(total_row[6] or 0),
+        "estimated_cost_usd": float(total_row[7] or 0.0),
+        "groups": [
+            {
+                "provider": row[0],
+                "operation": row[1],
+                "requests": int(row[2] or 0),
+                "success": int(row[3] or 0),
+                "errors": int(row[4] or 0),
+                "avg_latency_ms": int(row[5] or 0),
+                "max_latency_ms": int(row[6] or 0),
+                "input_units": int(row[7] or 0),
+                "output_units": int(row[8] or 0),
+                "estimated_cost_usd": float(row[9] or 0.0),
+            }
+            for row in rows
+        ],
+    }
+
+
+async def cleanup_service_metrics_older_than(days: int) -> int:
+    days = max(int(days), 1)
+
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM service_metrics
+            WHERE created_at < datetime('now', ?)
+            """,
+            (f"-{days} days",),
+        )
+        await db.commit()
+
+    return int(cursor.rowcount or 0)

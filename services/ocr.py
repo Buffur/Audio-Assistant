@@ -8,12 +8,13 @@ import re
 import PIL.Image
 from google.genai import types
 
-from config import GEMINI_OCR_MODEL, OCR_MIN_TEXT_LENGTH
-from services.gemini_client import generate_gemini_content
+from config import GEMINI_OCR_MODEL, GEMINI_OCR_MODEL_CHAIN, OCR_MIN_TEXT_LENGTH
+from services.gemini_client import generate_gemini_content_with_fallback
 
 logger = logging.getLogger(__name__)
 
 OCR_MODEL = GEMINI_OCR_MODEL
+OCR_MODEL_CHAIN = GEMINI_OCR_MODEL_CHAIN
 OCR_NO_TEXT_MESSAGE = "❌ На цьому фото не знайдено тексту."
 OCR_GENERIC_ERROR_MESSAGE = (
     "❌ Помилка розпізнавання тексту з фотографії. Спробуйте ще раз."
@@ -71,8 +72,9 @@ def _is_usable_ocr_text(text: str) -> bool:
 
 
 async def _extract_with_gemini(image: PIL.Image.Image) -> str:
-    response = await generate_gemini_content(
-        model=OCR_MODEL,
+    response = await generate_gemini_content_with_fallback(
+        primary_model=OCR_MODEL,
+        fallback_models=OCR_MODEL_CHAIN,
         contents=[OCR_PROMPT, image],
         config=types.GenerateContentConfig(
             temperature=0.1,

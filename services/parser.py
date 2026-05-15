@@ -12,8 +12,8 @@ import aiohttp
 from bs4 import BeautifulSoup
 from google.genai import types
 
-from config import AI_PROVIDER_CHAIN, GEMINI_TEXT_MODEL
-from services.gemini_client import generate_gemini_content
+from config import AI_PROVIDER_CHAIN, GEMINI_TEXT_MODEL, GEMINI_TEXT_MODEL_CHAIN
+from services.gemini_client import generate_gemini_content_with_fallback
 from services.ollama_ai import generate_ollama_text
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ MIN_ARTICLE_LENGTH = 50
 MAX_REDIRECTS = 5
 
 AI_MODEL = GEMINI_TEXT_MODEL
+AI_MODEL_CHAIN = GEMINI_TEXT_MODEL_CHAIN
 AI_PROVIDER_NAMES = {"ollama", "gemini"}
 
 HEADERS = {
@@ -332,8 +333,9 @@ def _ai_provider_chain() -> list[str]:
 
 
 async def _generate_text_with_gemini(prompt: str, temperature: float) -> str | None:
-    response = await generate_gemini_content(
-        model=AI_MODEL,
+    response = await generate_gemini_content_with_fallback(
+        primary_model=AI_MODEL,
+        fallback_models=AI_MODEL_CHAIN,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=temperature,

@@ -13,6 +13,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 from config import (
     ADMIN_IDS,
     BOT_TOKEN,
+    MAINTENANCE_CLEANUP_INTERVAL_SECONDS,
     RATE_LIMIT_BACKEND,
     RATE_LIMIT_MAX_EVENTS,
     RATE_LIMIT_PERIOD_SECONDS,
@@ -164,6 +165,25 @@ cleanup_expired_reading_sessions = _import_optional_attr(
     ),
 )
 
+run_maintenance_cleanup = _import_optional_attr(
+    module_path="services.maintenance_service",
+    attr_name="run_maintenance_cleanup",
+    warning_message=(
+        "services.maintenance_service не має run_maintenance_cleanup. "
+        "Фонове очищення retention-даних не підключено."
+    ),
+)
+
+
+close_telemetry_service = _import_optional_attr(
+    module_path="services.telemetry_service",
+    attr_name="close_telemetry_service",
+    warning_message=(
+        "services.telemetry_service or close_telemetry_service not found. "
+        "Telemetry flush on shutdown is disabled."
+    ),
+)
+
 
 # ============================================================
 # ROUTERS ORDER
@@ -182,6 +202,7 @@ ROUTERS_ORDER = [
     ("handlers.start", True),
     ("handlers.settings", True),
     ("handlers.usage", False),
+    ("handlers.privacy", False),
     ("handlers.history", False),
     ("handlers.catalog", False),
     ("handlers.reading_callbacks", False),
@@ -225,6 +246,21 @@ async def reading_session_cleanup_worker() -> None:
             logger.exception(
                 "Помилка під час фонового очищення reading-сесій"
             )
+
+
+async def maintenance_cleanup_worker() -> None:
+    if run_maintenance_cleanup is None:
+        return
+
+    while True:
+        try:
+            await run_maintenance_cleanup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Помилка під час фонового maintenance cleanup")
+
+        await asyncio.sleep(MAINTENANCE_CLEANUP_INTERVAL_SECONDS)
 
 
 # ============================================================
@@ -364,6 +400,8 @@ USER_COMMANDS = [
     BotCommand(command="usage", description="Перевірити денні ліміти"),
     BotCommand(command="catalog", description="Відкрити історію документів"),
     BotCommand(command="history", description="Показати історію документів"),
+    BotCommand(command="privacy", description="Privacy і збереження даних"),
+    BotCommand(command="delete_my_data", description="Очистити мої дані"),
 ]
 
 ADMIN_COMMANDS = [
@@ -416,6 +454,7 @@ async def main() -> None:
     dp = Dispatcher()
 
     cleanup_task: asyncio.Task | None = None
+    maintenance_task: asyncio.Task | None = None
 
     await init_db()
 
@@ -428,6 +467,12 @@ async def main() -> None:
             reading_session_cleanup_worker()
         )
         logger.info("Фонове очищення reading-сесій запущено.")
+
+    if run_maintenance_cleanup is not None:
+        maintenance_task = asyncio.create_task(
+            maintenance_cleanup_worker()
+        )
+        logger.info("Фонове maintenance cleanup запущено.")
 
     logger.info("Бот запущено.")
 
@@ -444,6 +489,12 @@ async def main() -> None:
             with suppress(asyncio.CancelledError):
                 await cleanup_task
 
+        if maintenance_task is not None:
+            maintenance_task.cancel()
+
+            with suppress(asyncio.CancelledError):
+                await maintenance_task
+
         if cleanup_all_reading_sessions is not None:
             await cleanup_all_reading_sessions()
 
@@ -452,6 +503,9 @@ async def main() -> None:
 
         if close_redis_client is not None:
             await close_redis_client()
+
+        if close_telemetry_service is not None:
+            await close_telemetry_service()
 
         await bot.session.close()
         logger.info("Бот зупинено.")

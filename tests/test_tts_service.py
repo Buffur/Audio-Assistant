@@ -5,8 +5,12 @@ from services import tts
 
 @pytest.fixture(autouse=True)
 def use_default_edge_provider(monkeypatch) -> None:
+    async def fake_record_service_metric(**kwargs):
+        return None
+
     monkeypatch.setattr(tts, "TTS_PROVIDER", "edge")
     monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", [])
+    monkeypatch.setattr(tts, "record_service_metric", fake_record_service_metric)
 
 
 def test_validate_tts_input_rejects_bad_values() -> None:
@@ -305,6 +309,48 @@ async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
         "rate": "+0%",
         "audio_path": "/tmp/edge.ogg",
     }
+
+
+@pytest.mark.asyncio
+async def test_generate_voice_falls_back_to_edge_after_gemini_quota_without_error_log(
+    monkeypatch,
+    caplog,
+) -> None:
+    saved = {}
+
+    async def fail_gemini_quota(**kwargs):
+        raise tts.GeminiQuotaExceededError("Gemini quota exhausted")
+
+    async def fake_generate_chunk_voice(
+        chunk,
+        voice,
+        rate,
+        chunk_index,
+        chunks_count,
+    ):
+        return "/tmp/edge.ogg"
+
+    def fake_save_audio_to_cache(**kwargs):
+        saved.update(kwargs)
+
+    monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "edge"])
+    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
+    monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_gemini_quota)
+    monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
+    monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
+
+    result = await tts.generate_voice(
+        text="generated",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        raise_on_error=True,
+    )
+
+    assert result == ["/tmp/edge.ogg"]
+    assert saved["voice"] == "uk-UA-PolinaNeural"
+    assert "fallback continues" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 @pytest.mark.asyncio

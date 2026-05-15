@@ -8,7 +8,13 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from config import ADMIN_IDS
-from database.db import ban_user, get_all_users_detailed, get_daily_usage, unban_user
+from database.db import (
+    ban_user,
+    get_all_users_detailed,
+    get_daily_usage,
+    get_service_metrics_summary,
+    unban_user,
+)
 from keyboards.admin_menu import (
     ADMIN_MENU_BANS_CALLBACK,
     ADMIN_MENU_BROADCAST_CALLBACK,
@@ -253,13 +259,16 @@ async def _build_stats_text() -> str:
         for key in usage_totals:
             usage_totals[key] += usage.get(key, 0)
 
+    service_metrics = await get_service_metrics_summary(days=1)
+
     return build_admin_stats_text(
         total_users=total_users,
         active_users=active_users,
         banned_users=banned_users,
         free_users=free_users,
         premium_users=premium_users,
-        usage_totals=usage_totals
+        usage_totals=usage_totals,
+        service_metrics=service_metrics,
     )
 
 

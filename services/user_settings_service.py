@@ -27,7 +27,7 @@ DEFAULT_USER_TTS_PROVIDER = "edge"
 
 TTS_PROVIDER_DISPLAY = {
     "edge": "Edge",
-    "piper": "Piper (локально)",
+    "piper": "Piper",
     "gemini": "Gemini (Ліміт+)",
 }
 

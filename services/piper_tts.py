@@ -426,7 +426,7 @@ async def generate_piper_tts_ogg(
     chunks_count: int,
 ) -> str:
     """
-    Генерує OGG/Opus voice-файл через локальний Piper CLI.
+    Генерує OGG/Opus voice-файл через Piper CLI.
 
     Piper повертає WAV, після чого ми конвертуємо його в OGG/Opus
     для Telegram voice.

@@ -142,3 +142,106 @@ async def test_app_settings_roundtrip(workspace_tmp_path, monkeypatch) -> None:
     assert await db_module.get_app_settings(["limit.text_messages"]) == {
         "limit.text_messages": "50",
     }
+
+
+@pytest.mark.asyncio
+async def test_service_metrics_summary_and_cleanup(workspace_tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "metrics.sqlite"))
+
+    await db_module.init_db()
+
+    await db_module.add_service_metric(
+        provider="gemini",
+        operation="ocr",
+        success=False,
+        latency_ms=1200,
+        input_units=300,
+        estimated_cost_usd=0.01,
+        error_type="RuntimeError",
+        error_message="temporary failure",
+    )
+    await db_module.add_service_metric(
+        provider="edge",
+        operation="tts",
+        success=True,
+        latency_ms=250,
+        input_units=120,
+    )
+    await db_module.add_service_metric(
+        provider="gemini",
+        operation="parser",
+        success=True,
+        latency_ms=100,
+        created_at="2000-01-01 00:00:00",
+    )
+
+    summary = await db_module.get_service_metrics_summary(days=1)
+
+    assert summary["total_requests"] == 2
+    assert summary["total_errors"] == 1
+    assert summary["max_latency_ms"] == 1200
+    assert summary["estimated_cost_usd"] == 0.01
+    assert summary["groups"][0]["provider"] == "gemini"
+    assert summary["groups"][0]["operation"] == "ocr"
+    assert summary["groups"][0]["errors"] == 1
+
+    assert await db_module.cleanup_service_metrics_older_than(days=1) == 1
+
+
+@pytest.mark.asyncio
+async def test_retention_and_delete_user_private_data(workspace_tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "retention.sqlite"))
+
+    await db_module.init_db()
+    await db_module.register_or_update_user(1, "@tester", "Test User")
+    await db_module.set_user_settings(1, voice="uk-UA-OstapNeural", rate="+25%")
+    await db_module.set_user_tts_provider(1, "piper")
+    await db_module.set_user_premium(1, None)
+    await db_module.ban_user(1)
+    await db_module.increment_daily_usage(
+        user_id=1,
+        usage_date="2026-05-15",
+        field_name="text_messages_processed",
+    )
+
+    old_document_id = await db_module.add_document_history(
+        user_id=1,
+        source_type="text",
+        source_name="Old",
+        text_preview="Old",
+        text_length=10,
+        chunks_count=1,
+        chunks_json='["old"]',
+    )
+    await db_module.add_document_history(
+        user_id=1,
+        source_type="text",
+        source_name="New",
+        text_preview="New",
+        text_length=10,
+        chunks_count=1,
+        chunks_json='["new"]',
+    )
+
+    async with db_module.get_db_connection() as raw_db:
+        await raw_db.execute(
+            "UPDATE document_history SET created_at = ? WHERE id = ?",
+            ("2000-01-01 00:00:00", old_document_id),
+        )
+        await raw_db.commit()
+
+    assert await db_module.delete_document_history_older_than(days=1) == 1
+    assert await db_module.count_user_document_history(1) == 1
+
+    result = await db_module.delete_user_private_data(1)
+
+    assert result == {
+        "document_history": 1,
+        "usage_daily": 1,
+        "user_settings": 1,
+    }
+    assert await db_module.count_user_document_history(1) == 0
+    assert await db_module.get_user_settings(1) == (None, None)
+    assert await db_module.get_user_tts_provider(1) is None
+    assert await db_module.is_user_banned(1) is True
+    assert (await db_module.get_user_plan_info(1))["plan"] == "premium"

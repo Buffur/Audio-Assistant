@@ -27,7 +27,14 @@ class Settings(BaseSettings):
     DEFAULT_RATE: str = "+0%"
 
     AI_PROVIDER_CHAIN: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    GEMINI_TEXT_MODEL: str = "gemini-3.1-flash-lite-preview"
+    GEMINI_TEXT_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_TEXT_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "gemini-2.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash-lite",
+        ]
+    )
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen3:8b"
     OLLAMA_TIMEOUT_SECONDS: int = 120
@@ -38,13 +45,26 @@ class Settings(BaseSettings):
     GEMINI_RETRY_ATTEMPTS: int = 2
     GEMINI_RETRY_BASE_DELAY_SECONDS: float = 1.0
     GEMINI_RETRY_MAX_DELAY_SECONDS: float = 6.0
+    GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD: float = 0.0
+    GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD: float = 0.0
 
-    GEMINI_OCR_MODEL: str = "gemini-3.1-flash-lite-preview"
+    GEMINI_OCR_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_OCR_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "gemini-2.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash-lite",
+        ]
+    )
     OCR_MIN_TEXT_LENGTH: int = 12
 
     TTS_PROVIDER: str = "edge"
     TTS_PROVIDER_CHAIN: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    TTS_ESTIMATED_COST_PER_1K_CHARS_USD: float = 0.0
     GEMINI_TTS_MODEL: str = "gemini-3.1-flash-tts-preview"
+    GEMINI_TTS_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["gemini-2.5-flash-preview-tts"]
+    )
     GEMINI_TTS_VOICE: str = "Kore"
     GEMINI_TTS_FEMALE_VOICE: str = "Kore"
     GEMINI_TTS_MALE_VOICE: str = "Charon"
@@ -65,6 +85,9 @@ class Settings(BaseSettings):
 
     DB_PATH: str = "bot_database.sqlite"
     REDIS_URL: str = "redis://localhost:6379/0"
+    DOCUMENT_HISTORY_RETENTION_DAYS: int = 90
+    SERVICE_METRICS_RETENTION_DAYS: int = 30
+    MAINTENANCE_CLEANUP_INTERVAL_SECONDS: int = 24 * 60 * 60
 
     RATE_LIMIT_MAX_EVENTS: int = 8
     RATE_LIMIT_PERIOD_SECONDS: int = 10
@@ -180,6 +203,9 @@ class Settings(BaseSettings):
         "GEMINI_RETRY_ATTEMPTS",
         "OCR_MIN_TEXT_LENGTH",
         "PIPER_TIMEOUT_SECONDS",
+        "DOCUMENT_HISTORY_RETENTION_DAYS",
+        "SERVICE_METRICS_RETENTION_DAYS",
+        "MAINTENANCE_CLEANUP_INTERVAL_SECONDS",
         "AUDIO_CACHE_MAX_SIZE_MB",
         "AUDIO_CACHE_MAX_AGE_DAYS",
         "AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS",
@@ -188,6 +214,18 @@ class Settings(BaseSettings):
     def _validate_positive_int(cls, value: int, info: Any) -> int:
         if value <= 0:
             raise ValueError(f"{info.field_name} must be greater than 0")
+
+        return value
+
+    @field_validator(
+        "GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD",
+        "GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD",
+        "TTS_ESTIMATED_COST_PER_1K_CHARS_USD",
+    )
+    @classmethod
+    def _validate_non_negative_float(cls, value: float, info: Any) -> float:
+        if value < 0:
+            raise ValueError(f"{info.field_name} must not be negative")
 
         return value
 
@@ -229,6 +267,42 @@ class Settings(BaseSettings):
 
         return normalized_providers
 
+    @field_validator(
+        "GEMINI_TEXT_MODEL_CHAIN",
+        "GEMINI_OCR_MODEL_CHAIN",
+        "GEMINI_TTS_MODEL_CHAIN",
+        mode="before",
+    )
+    @classmethod
+    def _parse_model_chain(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+
+            models = re.split(r"[\s,;]+", value.strip())
+
+        elif isinstance(value, (list, tuple)):
+            models = [str(item) for item in value]
+
+        else:
+            raise ValueError("Model chain must be a comma-separated string or list")
+
+        normalized_models: list[str] = []
+
+        for model in models:
+            model = model.strip()
+
+            if not model:
+                continue
+
+            if model not in normalized_models:
+                normalized_models.append(model)
+
+        return normalized_models
+
     @field_validator("RATE_LIMIT_BACKEND")
     @classmethod
     def _validate_rate_limit_backend(cls, value: str) -> str:
@@ -245,7 +319,9 @@ class Settings(BaseSettings):
         value = value.strip().lower()
 
         if value not in {"edge", "gemini", "piper"}:
-            raise ValueError("TTS_PROVIDER must be 'edge', 'gemini', or 'piper'")
+            raise ValueError(
+                "TTS_PROVIDER must be 'edge', 'gemini', or 'piper'"
+            )
 
         return value
 
@@ -332,6 +408,7 @@ DEFAULT_RATE = settings.DEFAULT_RATE
 
 AI_PROVIDER_CHAIN = settings.AI_PROVIDER_CHAIN
 GEMINI_TEXT_MODEL = settings.GEMINI_TEXT_MODEL
+GEMINI_TEXT_MODEL_CHAIN = settings.GEMINI_TEXT_MODEL_CHAIN
 OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
 OLLAMA_MODEL = settings.OLLAMA_MODEL
 OLLAMA_TIMEOUT_SECONDS = settings.OLLAMA_TIMEOUT_SECONDS
@@ -342,13 +419,22 @@ GEMINI_REQUEST_TIMEOUT_SECONDS = settings.GEMINI_REQUEST_TIMEOUT_SECONDS
 GEMINI_RETRY_ATTEMPTS = settings.GEMINI_RETRY_ATTEMPTS
 GEMINI_RETRY_BASE_DELAY_SECONDS = settings.GEMINI_RETRY_BASE_DELAY_SECONDS
 GEMINI_RETRY_MAX_DELAY_SECONDS = settings.GEMINI_RETRY_MAX_DELAY_SECONDS
+GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD = (
+    settings.GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD
+)
+GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD = (
+    settings.GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD
+)
 
 GEMINI_OCR_MODEL = settings.GEMINI_OCR_MODEL
+GEMINI_OCR_MODEL_CHAIN = settings.GEMINI_OCR_MODEL_CHAIN
 OCR_MIN_TEXT_LENGTH = settings.OCR_MIN_TEXT_LENGTH
 
 TTS_PROVIDER = settings.TTS_PROVIDER
 TTS_PROVIDER_CHAIN = settings.TTS_PROVIDER_CHAIN
+TTS_ESTIMATED_COST_PER_1K_CHARS_USD = settings.TTS_ESTIMATED_COST_PER_1K_CHARS_USD
 GEMINI_TTS_MODEL = settings.GEMINI_TTS_MODEL
+GEMINI_TTS_MODEL_CHAIN = settings.GEMINI_TTS_MODEL_CHAIN
 GEMINI_TTS_VOICE = settings.GEMINI_TTS_VOICE
 GEMINI_TTS_FEMALE_VOICE = settings.GEMINI_TTS_FEMALE_VOICE
 GEMINI_TTS_MALE_VOICE = settings.GEMINI_TTS_MALE_VOICE
@@ -366,6 +452,9 @@ ADMIN_IDS = settings.ADMIN_IDS
 
 DB_PATH = settings.DB_PATH
 REDIS_URL = settings.REDIS_URL
+DOCUMENT_HISTORY_RETENTION_DAYS = settings.DOCUMENT_HISTORY_RETENTION_DAYS
+SERVICE_METRICS_RETENTION_DAYS = settings.SERVICE_METRICS_RETENTION_DAYS
+MAINTENANCE_CLEANUP_INTERVAL_SECONDS = settings.MAINTENANCE_CLEANUP_INTERVAL_SECONDS
 
 RATE_LIMIT_MAX_EVENTS = settings.RATE_LIMIT_MAX_EVENTS
 RATE_LIMIT_PERIOD_SECONDS = settings.RATE_LIMIT_PERIOD_SECONDS

@@ -133,6 +133,27 @@ def test_ai_provider_chain_supports_ordered_fallbacks() -> None:
     assert settings.AI_PROVIDER_CHAIN == ["ollama", "gemini"]
 
 
+def test_gemini_model_chains_parse_unique_values() -> None:
+    settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+        GEMINI_TEXT_MODEL_CHAIN="gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash",
+        GEMINI_OCR_MODEL_CHAIN="gemini-2.5-flash-lite; gemini-2.5-flash",
+        GEMINI_TTS_MODEL_CHAIN="gemini-2.5-flash-preview-tts",
+    )
+
+    assert settings.GEMINI_TEXT_MODEL_CHAIN == [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
+    ]
+    assert settings.GEMINI_OCR_MODEL_CHAIN == [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+    ]
+    assert settings.GEMINI_TTS_MODEL_CHAIN == ["gemini-2.5-flash-preview-tts"]
+
+
 def test_ai_provider_chain_rejects_unknown_value() -> None:
     with pytest.raises(ValueError):
         Settings(
