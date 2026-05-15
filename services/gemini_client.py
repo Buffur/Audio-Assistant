@@ -138,6 +138,7 @@ async def generate_gemini_content(
     contents: Any,
     config: Any | None = None,
     context: str,
+    timeout_seconds: int | float | None = None,
 ) -> Any:
     """
     Calls Gemini with a bounded timeout and small retry budget.
@@ -145,6 +146,7 @@ async def generate_gemini_content(
     attempts = max(GEMINI_RETRY_ATTEMPTS, 1)
     last_error: Exception | None = None
     input_units = estimate_payload_units(contents)
+    request_timeout_seconds = timeout_seconds or GEMINI_REQUEST_TIMEOUT_SECONDS
 
     for attempt in range(1, attempts + 1):
         started_at = time.perf_counter()
@@ -157,7 +159,7 @@ async def generate_gemini_content(
                     contents=contents,
                     config=config,
                 ),
-                timeout=GEMINI_REQUEST_TIMEOUT_SECONDS,
+                timeout=request_timeout_seconds,
             )
 
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -229,6 +231,7 @@ async def generate_gemini_content_with_fallback(
     contents: Any,
     config: Any | None = None,
     context: str,
+    timeout_seconds: int | float | None = None,
 ) -> Any:
     model_chain = normalize_model_chain(
         primary_model=primary_model,
@@ -243,6 +246,7 @@ async def generate_gemini_content_with_fallback(
                 contents=contents,
                 config=config,
                 context=context,
+                timeout_seconds=timeout_seconds,
             )
         except (
             GeminiQuotaExceededError,

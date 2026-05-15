@@ -68,3 +68,46 @@ def test_extract_audio_data_rejects_missing_payload() -> None:
 
     with pytest.raises(RuntimeError):
         gemini_tts._extract_audio_data(response)
+
+
+@pytest.mark.asyncio
+async def test_generate_gemini_tts_uses_tts_timeout(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_generate_gemini_content_with_fallback(**kwargs):
+        captured.update(kwargs)
+        return _audio_response(b"audio")
+
+    async def fake_convert_to_ogg(wav_path):
+        return "/tmp/audio.ogg"
+
+    monkeypatch.setattr(
+        gemini_tts,
+        "GEMINI_TTS_REQUEST_TIMEOUT_SECONDS",
+        123,
+    )
+    monkeypatch.setattr(
+        gemini_tts,
+        "generate_gemini_content_with_fallback",
+        fake_generate_gemini_content_with_fallback,
+    )
+    monkeypatch.setattr(
+        gemini_tts,
+        "create_temp_file_path",
+        lambda suffix: "/tmp/audio.wav",
+    )
+    monkeypatch.setattr(gemini_tts, "_write_pcm_to_wav", lambda **kwargs: None)
+    monkeypatch.setattr(gemini_tts, "convert_to_ogg", fake_convert_to_ogg)
+    monkeypatch.setattr(gemini_tts, "safe_remove_file", lambda path: None)
+
+    result = await gemini_tts.generate_gemini_tts_ogg(
+        text="hello",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        chunk_index=1,
+        chunks_count=1,
+    )
+
+    assert result == "/tmp/audio.ogg"
+    assert captured["context"] == "tts"
+    assert captured["timeout_seconds"] == 123

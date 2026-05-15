@@ -13,6 +13,7 @@ from config import (
     GEMINI_TTS_MALE_VOICE,
     GEMINI_TTS_MODEL,
     GEMINI_TTS_MODEL_CHAIN,
+    GEMINI_TTS_REQUEST_TIMEOUT_SECONDS,
     GEMINI_TTS_STYLE_PROMPT,
     GEMINI_TTS_VOICE,
 )
@@ -149,6 +150,7 @@ async def generate_gemini_tts_ogg(
                 ),
             ),
             context="tts",
+            timeout_seconds=GEMINI_TTS_REQUEST_TIMEOUT_SECONDS,
         )
 
         pcm_data = _extract_audio_data(response)

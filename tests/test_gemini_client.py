@@ -67,6 +67,33 @@ async def test_generate_gemini_content_retries_after_failure(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_generate_gemini_content_uses_timeout_override(monkeypatch) -> None:
+    models = FakeGeminiModels([SimpleNamespace(text="ok")])
+    captured = {}
+
+    async def fake_record_service_metric(**kwargs):
+        return None
+
+    async def fake_wait_for(awaitable, timeout):
+        captured["timeout"] = timeout
+        return await awaitable
+
+    monkeypatch.setattr(gemini_client, "_get_gemini_client", lambda: _fake_client(models))
+    monkeypatch.setattr(gemini_client, "record_service_metric", fake_record_service_metric)
+    monkeypatch.setattr(gemini_client.asyncio, "wait_for", fake_wait_for)
+
+    response = await gemini_client.generate_gemini_content(
+        model="gemini-test",
+        contents="prompt",
+        context="tts",
+        timeout_seconds=123,
+    )
+
+    assert response.text == "ok"
+    assert captured["timeout"] == 123
+
+
+@pytest.mark.asyncio
 async def test_generate_gemini_content_raises_after_retry_budget(monkeypatch) -> None:
     models = FakeGeminiModels(
         [

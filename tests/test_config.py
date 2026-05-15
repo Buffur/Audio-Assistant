@@ -207,9 +207,11 @@ def test_gemini_tts_chunk_max_length_is_validated() -> None:
         BOT_TOKEN="123456:test_bot_token",
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
+        GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=90,
         GEMINI_TTS_CHUNK_MAX_LENGTH=1200,
     )
 
+    assert settings.GEMINI_TTS_REQUEST_TIMEOUT_SECONDS == 90
     assert settings.GEMINI_TTS_CHUNK_MAX_LENGTH == 1200
 
     with pytest.raises(ValueError):
@@ -218,6 +220,14 @@ def test_gemini_tts_chunk_max_length_is_validated() -> None:
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
             GEMINI_TTS_CHUNK_MAX_LENGTH=0,
+        )
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=0,
         )
 
 
