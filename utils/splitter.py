@@ -69,7 +69,7 @@ def _add_word_to_chunk(
     return current_chunk + word + " "
 
 
-def split_text(text: str) -> list[str]:
+def split_text(text: str, max_length: int = MAX_LENGTH) -> list[str]:
     """
     Розбиває текст на фрагменти, не розриваючи слова та абзаци.
 
@@ -79,6 +79,9 @@ def split_text(text: str) -> list[str]:
     - не створювати порожні частини;
     - безпечно обробляти дуже довгі слова або рядки без пробілів.
     """
+    if max_length <= 0:
+        raise ValueError("max_length must be greater than 0")
+
     if not text:
         return []
 
@@ -92,7 +95,9 @@ def split_text(text: str) -> list[str]:
         if not paragraph:
             continue
 
-        if len(paragraph) > MAX_LENGTH:
+        paragraph_with_separator = paragraph + PARAGRAPH_SEPARATOR
+
+        if len(paragraph_with_separator) > max_length:
             words = paragraph.split(" ")
 
             for word in words:
@@ -100,14 +105,12 @@ def split_text(text: str) -> list[str]:
                     chunks=chunks,
                     current_chunk=current_chunk,
                     word=word,
-                    max_length=MAX_LENGTH
+                    max_length=max_length,
                 )
 
             continue
 
-        paragraph_with_separator = paragraph + PARAGRAPH_SEPARATOR
-
-        if len(current_chunk) + len(paragraph_with_separator) > MAX_LENGTH:
+        if len(current_chunk) + len(paragraph_with_separator) > max_length:
             _append_chunk(chunks, current_chunk)
             current_chunk = paragraph_with_separator
         else:

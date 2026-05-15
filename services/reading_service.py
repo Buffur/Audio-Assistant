@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import suppress
+from collections.abc import Awaitable, Callable
 
 from aiogram.types import Message
 
@@ -19,9 +20,87 @@ from services.user_settings_service import (
     get_effective_user_tts_provider,
 )
 from services.voice_selector import select_voice_for_text
-from services.voice_sender import send_voice_files
+from services.voice_sender import safe_remove_file, send_voice_files
+from texts.messages import (
+    ALL_PARTS_SENT_TEXT,
+    BACKGROUND_GENERATION_ERROR,
+    CHUNK_AUDIO_GENERATION_ERROR,
+    SESSION_NOT_FOUND_OR_FINISHED_TEXT,
+    build_audio_generation_queued_text,
+    build_generating_audio_progress_text,
+    build_generating_chunk_text,
+    build_loading_chunk_text,
+    build_part_caption,
+)
 
 logger = logging.getLogger(__name__)
+
+READING_AUDIO_QUEUE_MAX_SIZE = 100
+READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = 10.0
+
+AudioGenerationJob = Callable[[], Awaitable[None]]
+
+_audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
+_audio_generation_worker_task: asyncio.Task | None = None
+
+
+async def _audio_generation_worker(
+    queue: asyncio.Queue[AudioGenerationJob],
+) -> None:
+    while True:
+        job = await queue.get()
+
+        try:
+            await job()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ReadingService: background audio generation job failed")
+        finally:
+            queue.task_done()
+
+
+def _ensure_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
+    global _audio_generation_queue
+    global _audio_generation_worker_task
+
+    if _audio_generation_queue is None:
+        _audio_generation_queue = asyncio.Queue(
+            maxsize=READING_AUDIO_QUEUE_MAX_SIZE,
+        )
+
+    if (
+        _audio_generation_worker_task is None
+        or _audio_generation_worker_task.done()
+    ):
+        _audio_generation_worker_task = asyncio.create_task(
+            _audio_generation_worker(_audio_generation_queue)
+        )
+
+    return _audio_generation_queue
+
+
+async def close_reading_audio_queue(
+    timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
+) -> None:
+    global _audio_generation_queue
+    global _audio_generation_worker_task
+
+    queue = _audio_generation_queue
+    worker_task = _audio_generation_worker_task
+
+    if queue is not None:
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
+
+    if worker_task is not None and not worker_task.done():
+        worker_task.cancel()
+
+        with suppress(asyncio.CancelledError):
+            await worker_task
+
+    _audio_generation_queue = None
+    _audio_generation_worker_task = None
 
 
 async def safe_delete_message(message: Message | None) -> None:
@@ -34,6 +113,34 @@ async def safe_delete_message(message: Message | None) -> None:
 
     with suppress(Exception):
         await message.delete()
+
+
+async def safe_edit_message(message: Message | None, text: str) -> None:
+    if message is None:
+        return
+
+    with suppress(Exception):
+        await message.edit_text(text)
+
+
+def _is_same_session(session: dict | None, session_id: str | None) -> bool:
+    if not session:
+        return False
+
+    if session_id is None:
+        return True
+
+    return session.get("session_id") == session_id
+
+
+async def _finish_generation_if_session(
+    user_id: int,
+    session_id: str | None,
+) -> None:
+    session = await get_reading_session(user_id)
+
+    if _is_same_session(session, session_id):
+        await update_reading_session(user_id, is_generating=False)
 
 
 async def cleanup_session(user_id: int) -> None:
@@ -128,16 +235,20 @@ async def _get_audio_from_prefetch_or_generate(
     voice: str,
     rate: str,
     provider_chain: list[str],
+    current_part: int,
+    total_parts: int,
+    status_msg: Message | None = None,
 ) -> list[str]:
     """
     Бере аудіо з prefetch_task або генерує його вручну.
     """
     prefetch_task = session.get("prefetch_task")
-    status_msg: Message | None = None
-
     if prefetch_task:
         if not prefetch_task.done():
-            status_msg = await message.answer("⏳ Довантажую наступну частину.")
+            await safe_edit_message(
+                status_msg,
+                build_loading_chunk_text(current_part, total_parts),
+            )
 
         try:
             audio_files = await prefetch_task
@@ -170,7 +281,31 @@ async def _get_audio_from_prefetch_or_generate(
         await safe_delete_message(status_msg)
         return audio_files
 
-    status_msg = await message.answer("⏳ Генерую аудіо.")
+    await safe_edit_message(
+        status_msg,
+        build_generating_chunk_text(current_part, total_parts),
+    )
+
+    async def progress_callback(
+        completed_chunks: int,
+        chunks_count: int,
+        provider: str,
+        cache_hit: bool,
+    ) -> None:
+        if chunks_count <= 1:
+            return
+
+        await safe_edit_message(
+            status_msg,
+            build_generating_audio_progress_text(
+                current_part=current_part,
+                total_parts=total_parts,
+                completed_audio_chunks=completed_chunks,
+                total_audio_chunks=chunks_count,
+                provider=provider,
+                cache_hit=cache_hit,
+            ),
+        )
 
     try:
         audio_files = await generate_voice(
@@ -178,6 +313,7 @@ async def _get_audio_from_prefetch_or_generate(
             voice,
             rate,
             provider_chain=provider_chain,
+            progress_callback=progress_callback,
         )
         return audio_files
 
@@ -222,19 +358,24 @@ async def _start_prefetch_next_chunk(
     )
 
 
-async def send_audio_chunk(message: Message, user_id: int) -> None:
+async def _send_audio_chunk_now(
+    message: Message,
+    user_id: int,
+    expected_session_id: str | None,
+    status_msg: Message | None,
+) -> None:
     """
     Надсилає поточну частину тексту голосом і запускає prefetch наступної.
     """
     session = await get_reading_session(user_id)
 
-    if not session:
-        await message.answer("❌ Сесія читання не знайдена або вже завершена.")
+    if not _is_same_session(session, expected_session_id):
+        await safe_delete_message(status_msg)
         return
 
     chunks = session.get("chunks") or []
     index = int(session.get("index", 0))
-    session_id = session.get("session_id", "legacy")
+    current_session_id = session.get("session_id", "legacy")
 
     if not chunks:
         await cleanup_session(user_id)
@@ -262,6 +403,9 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             voice=voice,
             rate=rate,
             provider_chain=provider_chain,
+            current_part=index + 1,
+            total_parts=len(chunks),
+            status_msg=status_msg,
         )
 
         if not audio_files:
@@ -270,7 +414,14 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
                 user_id,
                 index,
             )
-            await message.answer("❌ Не вдалося згенерувати аудіо для цієї частини.")
+            await message.answer(CHUNK_AUDIO_GENERATION_ERROR)
+            return
+
+        current_session = await get_reading_session(user_id)
+
+        if not _is_same_session(current_session, expected_session_id):
+            for audio_path in audio_files:
+                safe_remove_file(audio_path)
             return
 
         new_index = index + 1
@@ -283,21 +434,18 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
 
         keyboard = reading_navigation_keyboard(
             has_next=has_next,
-            session_id=session_id,
+            session_id=current_session_id,
         )
 
         await _send_audio_files(
             message=message,
             audio_files=audio_files,
-            caption=f"📄 Частина {index + 1} з {len(chunks)}",
+            caption=build_part_caption(index + 1, len(chunks)),
             reply_markup=keyboard,
         )
 
         if not has_next:
-            await message.answer(
-                "✅ Всі частини надіслано. "
-                "Ви можете прослухати короткий зміст або завершити роботу з матеріалом."
-            )
+            await message.answer(ALL_PARTS_SENT_TEXT)
             return
 
         await _start_prefetch_next_chunk(
@@ -315,4 +463,59 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             user_id,
             index,
         )
-        await message.answer("❌ Сталася помилка під час генерації аудіо.")
+        await message.answer(BACKGROUND_GENERATION_ERROR)
+
+    finally:
+        await _finish_generation_if_session(user_id, expected_session_id)
+
+
+async def send_audio_chunk(message: Message, user_id: int) -> None:
+    """
+    Queues current reading chunk audio generation in the background.
+    """
+    session = await get_reading_session(user_id)
+
+    if not session:
+        await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
+        return
+
+    chunks = session.get("chunks") or []
+    index = int(session.get("index", 0))
+    session_id = session.get("session_id", "legacy")
+
+    if not chunks:
+        await cleanup_session(user_id)
+        await message.answer("❌ У сесії немає тексту для читання.")
+        return
+
+    if index >= len(chunks):
+        await cleanup_session(user_id)
+        await message.answer("✅ Всі частини вже були надіслані.")
+        return
+
+    await update_reading_session(user_id, is_generating=True)
+
+    queue = _ensure_audio_generation_queue()
+    queued_position = queue.qsize() + 1
+    status_msg = await message.answer(
+        build_audio_generation_queued_text(
+            current_part=index + 1,
+            total_parts=len(chunks),
+            queue_position=queued_position,
+        )
+    )
+
+    async def job() -> None:
+        await _send_audio_chunk_now(
+            message=message,
+            user_id=user_id,
+            expected_session_id=session_id,
+            status_msg=status_msg,
+        )
+
+    try:
+        queue.put_nowait(job)
+    except asyncio.QueueFull:
+        await safe_delete_message(status_msg)
+        await _finish_generation_if_session(user_id, session_id)
+        await message.answer(BACKGROUND_GENERATION_ERROR)

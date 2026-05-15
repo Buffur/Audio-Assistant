@@ -4,10 +4,12 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 
 import edge_tts
 
 from config import (
+    GEMINI_TTS_CHUNK_MAX_LENGTH,
     GEMINI_TTS_MODEL,
     GEMINI_TTS_MODEL_CHAIN,
     GEMINI_TTS_STYLE_PROMPT,
@@ -27,6 +29,7 @@ from services.piper_tts import (
 )
 from services.telemetry_service import record_service_metric
 from utils.audio import convert_to_ogg, create_temp_file_path, safe_remove_file
+from utils.splitter import MAX_LENGTH as DEFAULT_TTS_CHUNK_MAX_LENGTH
 from utils.splitter import split_text
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,8 @@ TTS_RETRY_BASE_DELAY_SECONDS = 0.8
 tts_semaphore = asyncio.Semaphore(TTS_CONCURRENCY_LIMIT)
 
 TTS_PROVIDER_NAMES = {"edge", "gemini", "piper"}
+
+TTSProgressCallback = Callable[[int, int, str, bool], Awaitable[None]]
 
 
 def _is_expected_provider_failure(error: Exception) -> bool:
@@ -89,6 +94,36 @@ def _provider_chain(provider_chain: list[str] | None = None) -> list[str]:
             normalized_providers.append(provider)
 
     return normalized_providers or ["edge"]
+
+
+def _chunk_max_length_for_providers(providers: list[str]) -> int:
+    if "gemini" in providers:
+        return GEMINI_TTS_CHUNK_MAX_LENGTH
+
+    return DEFAULT_TTS_CHUNK_MAX_LENGTH
+
+
+async def _notify_progress(
+    progress_callback: TTSProgressCallback | None,
+    completed_chunks: int,
+    chunks_count: int,
+    provider: str,
+    cache_hit: bool,
+) -> None:
+    if progress_callback is None:
+        return
+
+    try:
+        await progress_callback(
+            completed_chunks,
+            chunks_count,
+            provider,
+            cache_hit,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("TTS: progress callback failed")
 
 
 def _cache_voice_for_provider(provider: str, voice: str) -> str:
@@ -253,7 +288,7 @@ async def _generate_chunk_voice_for_provider(
     chunk_index: int,
     chunks_count: int,
     provider_chain: list[str] | None = None,
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, str]:
     providers = _provider_chain(provider_chain)
     provider_errors: list[str] = []
 
@@ -272,7 +307,7 @@ async def _generate_chunk_voice_for_provider(
                 chunk_index,
                 chunks_count,
             )
-            return cached_audio_path, cache_voice, True
+            return cached_audio_path, cache_voice, True, provider
 
         started_at = time.perf_counter()
 
@@ -296,7 +331,7 @@ async def _generate_chunk_voice_for_provider(
                     input_units=len(chunk),
                 )
 
-            return ogg_path, cache_voice, False
+            return ogg_path, cache_voice, False, provider
 
         except asyncio.CancelledError:
             raise
@@ -343,6 +378,7 @@ async def generate_voice(
     rate: str,
     raise_on_error: bool = False,
     provider_chain: list[str] | None = None,
+    progress_callback: TTSProgressCallback | None = None,
 ) -> list[str]:
     """
     Генерує voice-файли для Telegram.
@@ -360,7 +396,9 @@ async def generate_voice(
     try:
         _validate_tts_input(text, voice, rate)
 
-        chunks = split_text(text)
+        providers = _provider_chain(provider_chain)
+        chunk_max_length = _chunk_max_length_for_providers(providers)
+        chunks = split_text(text, max_length=chunk_max_length)
         chunks = [chunk.strip() for chunk in chunks if chunk and chunk.strip()]
 
         if not chunks:
@@ -372,7 +410,7 @@ async def generate_voice(
             len(chunks),
             voice,
             rate,
-            ",".join(_provider_chain(provider_chain)),
+            ",".join(providers),
         )
 
         for index, chunk in enumerate(chunks, start=1):
@@ -381,13 +419,14 @@ async def generate_voice(
                     ogg_path,
                     cache_voice,
                     cache_hit,
+                    used_provider,
                 ) = await _generate_chunk_voice_for_provider(
                     chunk=chunk,
                     voice=voice,
                     rate=rate,
                     chunk_index=index,
                     chunks_count=len(chunks),
-                    provider_chain=provider_chain,
+                    provider_chain=providers,
                 )
 
             if not cache_hit:
@@ -399,6 +438,13 @@ async def generate_voice(
                 )
 
             generated_files.append(ogg_path)
+            await _notify_progress(
+                progress_callback,
+                index,
+                len(chunks),
+                used_provider,
+                cache_hit,
+            )
 
         logger.info(
             "TTS: генерацію завершено, files=%s",

@@ -35,7 +35,11 @@ async def test_generate_voice_uses_split_chunks(monkeypatch) -> None:
     ):
         return f"/tmp/{chunk_index}-{chunks_count}-{chunk}.ogg"
 
-    monkeypatch.setattr(tts, "split_text", lambda text: ["one", "two"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["one", "two"],
+    )
     monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
 
     result = await tts.generate_voice(
@@ -53,7 +57,11 @@ async def test_generate_voice_uses_cached_audio(monkeypatch) -> None:
     async def fail_generate_chunk_voice(*args, **kwargs):
         raise AssertionError("_generate_chunk_voice should not be called")
 
-    monkeypatch.setattr(tts, "split_text", lambda text: ["cached"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["cached"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: "/tmp/cached.ogg")
     monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
 
@@ -83,7 +91,11 @@ async def test_generate_voice_saves_generated_audio_to_cache(monkeypatch) -> Non
     def fake_save_audio_to_cache(**kwargs):
         saved.update(kwargs)
 
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
     monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
@@ -120,7 +132,11 @@ async def test_generate_voice_uses_gemini_provider_cache_key(monkeypatch) -> Non
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER", "gemini")
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fake_generate_gemini_tts_ogg)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
@@ -161,7 +177,11 @@ async def test_generate_voice_falls_back_to_edge_when_gemini_fails(monkeypatch) 
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER", "gemini")
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
@@ -206,7 +226,11 @@ async def test_generate_voice_uses_edge_cache_after_gemini_failure(monkeypatch) 
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER", "gemini")
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", fake_get_audio_from_cache)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
@@ -242,7 +266,11 @@ async def test_generate_voice_uses_configured_provider_chain(monkeypatch) -> Non
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "piper", "edge"])
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
     monkeypatch.setattr(tts, "generate_piper_tts_ogg", fake_generate_piper_tts_ogg)
@@ -288,7 +316,11 @@ async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "piper", "edge"])
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
     monkeypatch.setattr(tts, "generate_piper_tts_ogg", fail_generate_piper_tts_ogg)
@@ -334,7 +366,11 @@ async def test_generate_voice_falls_back_to_edge_after_gemini_quota_without_erro
         saved.update(kwargs)
 
     monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "edge"])
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_gemini_quota)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
@@ -366,7 +402,11 @@ async def test_generate_voice_uses_explicit_provider_chain(monkeypatch) -> None:
     def fake_save_audio_to_cache(**kwargs):
         saved.update(kwargs)
 
-    monkeypatch.setattr(tts, "split_text", lambda text: ["generated"])
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_piper_tts_ogg", fake_generate_piper_tts_ogg)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
@@ -385,8 +425,76 @@ async def test_generate_voice_uses_explicit_provider_chain(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_voice_uses_gemini_chunk_limit(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_generate_gemini_tts_ogg(**kwargs):
+        return "/tmp/gemini.ogg"
+
+    def fake_split_text(text, max_length=None):
+        captured["max_length"] = max_length
+        return ["generated"]
+
+    monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "edge"])
+    monkeypatch.setattr(tts, "split_text", fake_split_text)
+    monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
+    monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fake_generate_gemini_tts_ogg)
+    monkeypatch.setattr(tts, "save_audio_to_cache", lambda **kwargs: None)
+
+    result = await tts.generate_voice(
+        text="generated",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        raise_on_error=True,
+    )
+
+    assert result == ["/tmp/gemini.ogg"]
+    assert captured["max_length"] == tts.GEMINI_TTS_CHUNK_MAX_LENGTH
+
+
+@pytest.mark.asyncio
+async def test_generate_voice_reports_progress(monkeypatch) -> None:
+    events = []
+
+    async def fake_generate_chunk_voice(
+        chunk,
+        voice,
+        rate,
+        chunk_index,
+        chunks_count,
+    ):
+        return f"/tmp/{chunk_index}.ogg"
+
+    async def progress_callback(completed, total, provider, cache_hit):
+        events.append((completed, total, provider, cache_hit))
+
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["one", "two"],
+    )
+    monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
+    monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
+    monkeypatch.setattr(tts, "save_audio_to_cache", lambda **kwargs: None)
+
+    result = await tts.generate_voice(
+        text="one two",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        raise_on_error=True,
+        progress_callback=progress_callback,
+    )
+
+    assert result == ["/tmp/1.ogg", "/tmp/2.ogg"]
+    assert events == [
+        (1, 2, "edge", False),
+        (2, 2, "edge", False),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_generate_voice_returns_empty_list_for_empty_chunks(monkeypatch) -> None:
-    monkeypatch.setattr(tts, "split_text", lambda text: [])
+    monkeypatch.setattr(tts, "split_text", lambda text, max_length=None: [])
 
     result = await tts.generate_voice(
         text="text",

@@ -130,9 +130,13 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
     else:
         await _safe_edit_reply_markup(callback, reply_markup=None)
 
+    if not callback.message:
+        if await has_reading_session(user_id):
+            await finish_generation(user_id)
+        return
+
     try:
-        if callback.message:
-            await send_audio_chunk(callback.message, user_id)
+        await send_audio_chunk(callback.message, user_id)
 
     except Exception:
         logger.exception(
@@ -146,7 +150,6 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
                 "❌ Сталася помилка під час генерації наступної частини."
             )
 
-    finally:
         if await has_reading_session(user_id):
             await finish_generation(user_id)
 

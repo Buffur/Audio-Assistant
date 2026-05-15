@@ -64,6 +64,35 @@ def build_generating_chunk_text(current_part: int, total_parts: int) -> str:
     return f"⏳ Генерую частину {current_part} з {total_parts}..."
 
 
+def build_audio_generation_queued_text(
+    current_part: int,
+    total_parts: int,
+    queue_position: int,
+) -> str:
+    return (
+        f"⏳ Додав частину {current_part} з {total_parts} у чергу озвучки. "
+        f"Позиція: {queue_position}."
+    )
+
+
+def build_generating_audio_progress_text(
+    *,
+    current_part: int,
+    total_parts: int,
+    completed_audio_chunks: int,
+    total_audio_chunks: int,
+    provider: str,
+    cache_hit: bool,
+) -> str:
+    cache_text = " з кешу" if cache_hit else ""
+
+    return (
+        f"⏳ Генерую частину {current_part} з {total_parts}: "
+        f"аудіо {completed_audio_chunks}/{total_audio_chunks} "
+        f"через {provider}{cache_text}..."
+    )
+
+
 def build_part_caption(current_part: int, total_parts: int) -> str:
     return f"📄 Частина {current_part} з {total_parts}"
 

@@ -30,9 +30,7 @@ from services.reading_service import (
     send_audio_chunk,
 )
 from services.reading_session_store import (
-    has_reading_session,
     set_reading_session,
-    set_reading_session_generating,
 )
 from texts.catalog import (
     CATALOG_CLEARED_TEXT,
@@ -274,12 +272,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     await safe_delete_message(status_msg)
 
-    try:
-        await send_audio_chunk(callback.message, user_id)
-
-    finally:
-        if await has_reading_session(user_id):
-            await set_reading_session_generating(user_id, False)
+    await send_audio_chunk(callback.message, user_id)
 
 
 @router.callback_query(F.data.startswith(CATALOG_DELETE_PREFIX))

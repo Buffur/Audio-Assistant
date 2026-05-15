@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any
 
 from aiogram import Bot, Dispatcher  # type: ignore
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from config import (
@@ -162,6 +163,15 @@ cleanup_expired_reading_sessions = _import_optional_attr(
     warning_message=(
         "services.reading_session_store не має cleanup_expired_reading_sessions. "
         "Фонове очищення reading-сесій не підключено."
+    ),
+)
+
+close_reading_audio_queue = _import_optional_attr(
+    module_path="services.reading_service",
+    attr_name="close_reading_audio_queue",
+    warning_message=(
+        "services.reading_service не має close_reading_audio_queue. "
+        "Фонову чергу озвучки не буде закрито явно."
     ),
 )
 
@@ -393,15 +403,26 @@ def setup_middlewares(dp: Dispatcher) -> None:
 # BOT COMMANDS
 # ============================================================
 
-USER_COMMANDS = [
+COMMAND_SETUP_TIMEOUT_SECONDS = 10
+
+MINIMAL_USER_COMMANDS = [
     BotCommand(command="start", description="Почати роботу"),
     BotCommand(command="help", description="Показати довідку"),
     BotCommand(command="settings", description="Налаштувати голос і швидкість"),
+]
+
+USER_COMMANDS = [
+    *MINIMAL_USER_COMMANDS,
     BotCommand(command="usage", description="Перевірити денні ліміти"),
     BotCommand(command="catalog", description="Відкрити історію документів"),
     BotCommand(command="history", description="Показати історію документів"),
     BotCommand(command="privacy", description="Privacy і збереження даних"),
     BotCommand(command="delete_my_data", description="Очистити мої дані"),
+]
+
+MINIMAL_ADMIN_COMMANDS = [
+    *MINIMAL_USER_COMMANDS,
+    BotCommand(command="admin", description="Відкрити адмін-меню"),
 ]
 
 ADMIN_COMMANDS = [
@@ -418,30 +439,93 @@ ADMIN_COMMANDS = [
 ]
 
 
-async def setup_bot_commands(bot: Bot) -> None:
+def _format_command_setup_error(error: Exception) -> str:
+    error_text = str(error).strip()
+    if not error_text:
+        return error.__class__.__name__
+
+    return f"{error.__class__.__name__}: {error_text}"
+
+
+def _should_retry_with_minimal_commands(error: Exception | None) -> bool:
+    if not isinstance(error, TelegramBadRequest):
+        return False
+
+    return "command" in str(error).lower()
+
+
+async def _try_set_bot_commands(
+    bot: Bot,
+    commands: list[BotCommand],
+    scope: BotCommandScopeDefault | BotCommandScopeChat,
+    log_label: str,
+) -> Exception | None:
     try:
         await bot.set_my_commands(
-            USER_COMMANDS,
-            scope=BotCommandScopeDefault(),
+            commands,
+            scope=scope,
+            request_timeout=COMMAND_SETUP_TIMEOUT_SECONDS,
         )
-        logger.info("Команди бота для користувачів встановлено.")
-    except Exception:
-        logger.exception("Не вдалося встановити команди бота для користувачів.")
+    except TelegramAPIError as error:
+        logger.warning(
+            "Не вдалося встановити %s: %s",
+            log_label,
+            _format_command_setup_error(error),
+        )
+        return error
+    except Exception as error:
+        logger.warning(
+            "Не вдалося встановити %s: %s",
+            log_label,
+            _format_command_setup_error(error),
+            exc_info=True,
+        )
+        return error
+
+    logger.info("%s встановлено.", log_label)
+    return None
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    user_error = await _try_set_bot_commands(
+        bot,
+        USER_COMMANDS,
+        BotCommandScopeDefault(),
+        "команди бота для користувачів",
+    )
+
+    if _should_retry_with_minimal_commands(user_error):
+        logger.warning(
+            "Telegram відхилив повний список користувацьких команд. "
+            "Пробую мінімальний набір."
+        )
+        await _try_set_bot_commands(
+            bot,
+            MINIMAL_USER_COMMANDS,
+            BotCommandScopeDefault(),
+            "мінімальні команди бота для користувачів",
+        )
 
     for admin_id in ADMIN_IDS:
-        try:
-            await bot.set_my_commands(
-                ADMIN_COMMANDS,
-                scope=BotCommandScopeChat(chat_id=admin_id),
-            )
-            logger.info(
-                "Адмін-команди бота встановлено для admin_id=%s.",
+        admin_scope = BotCommandScopeChat(chat_id=admin_id)
+        admin_error = await _try_set_bot_commands(
+            bot,
+            ADMIN_COMMANDS,
+            admin_scope,
+            f"адмін-команди бота для admin_id={admin_id}",
+        )
+
+        if _should_retry_with_minimal_commands(admin_error):
+            logger.warning(
+                "Telegram відхилив повний список адмін-команд для admin_id=%s. "
+                "Пробую мінімальний набір.",
                 admin_id,
             )
-        except Exception:
-            logger.exception(
-                "Не вдалося встановити адмін-команди бота для admin_id=%s.",
-                admin_id,
+            await _try_set_bot_commands(
+                bot,
+                MINIMAL_ADMIN_COMMANDS,
+                admin_scope,
+                f"мінімальні адмін-команди бота для admin_id={admin_id}",
             )
 
 
@@ -494,6 +578,9 @@ async def main() -> None:
 
             with suppress(asyncio.CancelledError):
                 await maintenance_task
+
+        if close_reading_audio_queue is not None:
+            await close_reading_audio_queue()
 
         if cleanup_all_reading_sessions is not None:
             await cleanup_all_reading_sessions()

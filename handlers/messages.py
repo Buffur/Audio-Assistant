@@ -16,9 +16,7 @@ from services.reading_service import (
     send_audio_chunk,
 )
 from services.reading_session_store import (
-    has_reading_session,
     set_reading_session,
-    set_reading_session_generating,
 )
 from services.usage_limits_service import (
     detect_input_usage_type,
@@ -206,11 +204,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
     else:
         await safe_delete_message(status_msg)
 
-    try:
-        await send_audio_chunk(message, user_id)
-    finally:
-        if await has_reading_session(user_id):
-            await set_reading_session_generating(user_id, False)
+    await send_audio_chunk(message, user_id)
 
 
 @router.message()

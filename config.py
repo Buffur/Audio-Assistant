@@ -72,6 +72,7 @@ class Settings(BaseSettings):
         "Read this Ukrainian text clearly and naturally. "
         "Keep a calm, friendly pace."
     )
+    GEMINI_TTS_CHUNK_MAX_LENGTH: int = 1600
     PIPER_EXECUTABLE: str = "piper"
     PIPER_MODELS_DIR: str = str(BASE_DIR / "data" / "piper")
     PIPER_MODEL_PATH: str = ""
@@ -202,6 +203,7 @@ class Settings(BaseSettings):
         "GEMINI_REQUEST_TIMEOUT_SECONDS",
         "GEMINI_RETRY_ATTEMPTS",
         "OCR_MIN_TEXT_LENGTH",
+        "GEMINI_TTS_CHUNK_MAX_LENGTH",
         "PIPER_TIMEOUT_SECONDS",
         "DOCUMENT_HISTORY_RETENTION_DAYS",
         "SERVICE_METRICS_RETENTION_DAYS",
@@ -439,6 +441,7 @@ GEMINI_TTS_VOICE = settings.GEMINI_TTS_VOICE
 GEMINI_TTS_FEMALE_VOICE = settings.GEMINI_TTS_FEMALE_VOICE
 GEMINI_TTS_MALE_VOICE = settings.GEMINI_TTS_MALE_VOICE
 GEMINI_TTS_STYLE_PROMPT = settings.GEMINI_TTS_STYLE_PROMPT
+GEMINI_TTS_CHUNK_MAX_LENGTH = settings.GEMINI_TTS_CHUNK_MAX_LENGTH
 PIPER_EXECUTABLE = settings.PIPER_EXECUTABLE
 PIPER_MODELS_DIR = settings.PIPER_MODELS_DIR
 PIPER_MODEL_PATH = settings.PIPER_MODEL_PATH

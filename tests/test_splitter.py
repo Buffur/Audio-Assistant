@@ -45,6 +45,16 @@ def test_split_text_chunks_do_not_exceed_max_length_for_long_text() -> None:
     assert all(len(chunk) <= MAX_LENGTH for chunk in chunks)
 
 
+def test_split_text_supports_custom_max_length() -> None:
+    text = ("alpha beta gamma " * 20).strip()
+    max_length = 40
+
+    chunks = split_text(text, max_length=max_length)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= max_length for chunk in chunks)
+
+
 def test_split_text_splits_very_long_word_safely() -> None:
     long_word = "а" * (MAX_LENGTH * 2 + 100)
 
