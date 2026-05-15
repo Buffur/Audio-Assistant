@@ -97,6 +97,21 @@ def build_part_caption(current_part: int, total_parts: int) -> str:
     return f"📄 Частина {current_part} з {total_parts}"
 
 
+def build_part_audio_caption(
+    *,
+    current_part: int,
+    total_parts: int,
+    current_audio: int,
+    total_audio: int,
+) -> str:
+    part_caption = build_part_caption(current_part, total_parts)
+
+    if total_audio <= 1:
+        return part_caption
+
+    return f"{part_caption} · аудіо {current_audio} з {total_audio}"
+
+
 def build_large_text_split_text(parts_count: int) -> str:
     return f"📚 Текст великий. Його розбито на {parts_count} частин."
 

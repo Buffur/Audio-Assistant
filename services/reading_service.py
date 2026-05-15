@@ -30,6 +30,7 @@ from texts.messages import (
     build_generating_audio_progress_text,
     build_generating_chunk_text,
     build_loading_chunk_text,
+    build_part_audio_caption,
     build_part_caption,
 )
 
@@ -155,6 +156,7 @@ async def _send_audio_files(
     audio_files: list[str],
     caption: str | None = None,
     reply_markup=None,
+    caption_builder=None,
 ) -> None:
     """
     Надсилає audio-файли як voice і завжди видаляє тимчасові файли.
@@ -164,6 +166,7 @@ async def _send_audio_files(
         audio_files=audio_files,
         caption=caption,
         reply_markup=reply_markup,
+        caption_builder=caption_builder,
     )
 
 
@@ -436,12 +439,21 @@ async def _send_audio_chunk_now(
             has_next=has_next,
             session_id=current_session_id,
         )
+        part_caption = build_part_caption(index + 1, len(chunks))
 
         await _send_audio_files(
             message=message,
             audio_files=audio_files,
-            caption=build_part_caption(index + 1, len(chunks)),
+            caption=part_caption,
             reply_markup=keyboard,
+            caption_builder=lambda audio_index, audio_count, _caption: (
+                build_part_audio_caption(
+                    current_part=index + 1,
+                    total_parts=len(chunks),
+                    current_audio=audio_index,
+                    total_audio=audio_count,
+                )
+            ),
         )
 
         if not has_next:

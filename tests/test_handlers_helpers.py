@@ -9,6 +9,7 @@ from keyboards import admin_menu as admin_menu_keyboard
 from keyboards import catalog as catalog_keyboard
 from texts import admin_menu as admin_menu_texts
 from texts import catalog as catalog_texts
+from texts import messages as message_texts
 
 
 def _message(text: str | None = None, user_id: int | None = None):
@@ -78,6 +79,22 @@ def test_admin_menu_detects_message_not_modified_error() -> None:
     assert admin_menu._is_message_not_modified_error(
         Exception("Bad Request: chat not found")
     ) is False
+
+
+def test_part_audio_caption_marks_internal_audio_chunks() -> None:
+    assert message_texts.build_part_audio_caption(
+        current_part=1,
+        total_parts=2,
+        current_audio=1,
+        total_audio=2,
+    ) == "📄 Частина 1 з 2 · аудіо 1 з 2"
+
+    assert message_texts.build_part_audio_caption(
+        current_part=1,
+        total_parts=2,
+        current_audio=1,
+        total_audio=1,
+    ) == "📄 Частина 1 з 2"
 
 
 def test_admin_menu_parses_user_callback_id() -> None:
