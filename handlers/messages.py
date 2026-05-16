@@ -195,12 +195,8 @@ async def _process_message(message: types.Message, user_id: int) -> None:
     )
 
     if len(chunks) > 1:
-        await reply_with_voice(
-            message,
-            user_id,
-            build_large_text_split_text(len(chunks)),
-            status_msg,
-        )
+        await safe_delete_message(status_msg)
+        await message.answer(build_large_text_split_text(len(chunks)))
     else:
         await safe_delete_message(status_msg)
 
