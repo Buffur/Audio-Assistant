@@ -8,7 +8,11 @@ from collections.abc import Awaitable, Callable
 
 from aiogram.types import Message
 
-from config import EXPORT_AUDIO_MAX_SIZE_MB
+from config import (
+    EXPORT_AUDIO_CROSSFADE_MS,
+    EXPORT_AUDIO_MAX_SIZE_MB,
+    EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
+)
 from keyboards.reading import reading_navigation_keyboard
 from services.reading_session_store import (
     cleanup_reading_session,
@@ -277,7 +281,11 @@ async def _export_reading_audio_now(
 
         await safe_edit_message(status_msg, EXPORT_AUDIO_CONCATENATING_TEXT)
 
-        combined_audio_file = await concat_ogg_files(generated_audio_files)
+        combined_audio_file = await concat_ogg_files(
+            generated_audio_files,
+            smooth=EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
+            crossfade_ms=EXPORT_AUDIO_CROSSFADE_MS,
+        )
         combined_file_size_mb = _file_size_mb(combined_audio_file)
 
         if os.path.getsize(combined_audio_file) > _export_max_size_bytes():

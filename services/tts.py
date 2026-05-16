@@ -22,7 +22,11 @@ from services.gemini_client import (
     GeminiModelUnavailableError,
     GeminiQuotaExceededError,
 )
-from services.gemini_tts import generate_gemini_tts_ogg, get_gemini_tts_voice
+from services.gemini_tts import (
+    GEMINI_TTS_CONTINUITY_PROMPT,
+    generate_gemini_tts_ogg,
+    get_gemini_tts_voice,
+)
 from services.piper_tts import (
     generate_piper_tts_ogg,
     get_piper_cache_voice_name,
@@ -65,6 +69,7 @@ def _gemini_cache_voice_name(edge_voice: str) -> str:
         f"gemini:{model_chain}:"
         f"{get_gemini_tts_voice(edge_voice)}:"
         f"{GEMINI_TTS_STYLE_PROMPT}:"
+        f"{GEMINI_TTS_CONTINUITY_PROMPT}:"
         f"{edge_voice}"
     )
 

@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     GEMINI_TTS_MALE_VOICE: str = "Charon"
     GEMINI_TTS_STYLE_PROMPT: str = (
         "Read this Ukrainian text clearly and naturally. "
-        "Keep a calm, friendly pace."
+        "Keep a calm, friendly pace and a consistent neutral newsroom tone. "
+        "Treat every chunk as part of one continuous article."
     )
     GEMINI_TTS_REQUEST_TIMEOUT_SECONDS: int = 120
     GEMINI_TTS_CHUNK_MAX_LENGTH: int = 1600
@@ -98,6 +99,8 @@ class Settings(BaseSettings):
 
     READING_SESSION_TTL_SECONDS: int = 45 * 60
     EXPORT_AUDIO_MAX_SIZE_MB: int = 48
+    EXPORT_AUDIO_SMOOTH_MERGE_ENABLED: bool = True
+    EXPORT_AUDIO_CROSSFADE_MS: int = 120
 
     AUDIO_CACHE_ENABLED: bool = True
     AUDIO_CACHE_DIR: str = str(BASE_DIR / "data" / "audio_cache")
@@ -196,6 +199,7 @@ class Settings(BaseSettings):
         "RATE_LIMIT_WARNING_COOLDOWN_SECONDS",
         "READING_SESSION_TTL_SECONDS",
         "EXPORT_AUDIO_MAX_SIZE_MB",
+        "EXPORT_AUDIO_CROSSFADE_MS",
         "FREE_DAILY_TEXT_MESSAGE_LIMIT",
         "FREE_DAILY_FILE_LIMIT",
         "FREE_DAILY_OCR_LIMIT",
@@ -473,6 +477,8 @@ RATE_LIMIT_BACKEND = settings.RATE_LIMIT_BACKEND
 
 READING_SESSION_TTL_SECONDS = settings.READING_SESSION_TTL_SECONDS
 EXPORT_AUDIO_MAX_SIZE_MB = settings.EXPORT_AUDIO_MAX_SIZE_MB
+EXPORT_AUDIO_SMOOTH_MERGE_ENABLED = settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED
+EXPORT_AUDIO_CROSSFADE_MS = settings.EXPORT_AUDIO_CROSSFADE_MS
 
 AUDIO_CACHE_ENABLED = settings.AUDIO_CACHE_ENABLED
 AUDIO_CACHE_DIR = settings.AUDIO_CACHE_DIR

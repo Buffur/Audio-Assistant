@@ -28,6 +28,17 @@ def test_rate_instruction_maps_supported_rates() -> None:
     assert gemini_tts._rate_instruction("+0%") == "Use a natural pace."
 
 
+def test_build_gemini_tts_prompt_adds_continuity_instruction(monkeypatch) -> None:
+    monkeypatch.setattr(gemini_tts, "GEMINI_TTS_STYLE_PROMPT", "Read calmly.")
+
+    prompt = gemini_tts._build_gemini_tts_prompt("Article text", "+0%")
+
+    assert "Read calmly." in prompt
+    assert "one continuous article" in prompt
+    assert "Use a natural pace." in prompt
+    assert prompt.endswith("\n\nArticle text")
+
+
 def test_get_gemini_tts_voice_uses_edge_voice_gender(monkeypatch) -> None:
     monkeypatch.setattr(gemini_tts, "GEMINI_TTS_FEMALE_VOICE", "Kore")
     monkeypatch.setattr(gemini_tts, "GEMINI_TTS_MALE_VOICE", "Charon")

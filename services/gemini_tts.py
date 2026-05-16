@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2
+GEMINI_TTS_CONTINUITY_PROMPT = (
+    "Maintain the same voice, pace, and neutral newsroom intonation across "
+    "chunks. Treat this chunk as part of one continuous article and do not "
+    "restart the emotional tone."
+)
 
 GEMINI_TTS_MALE_VOICE_MARKERS = {
     "antonin",
@@ -64,11 +69,16 @@ def get_gemini_tts_voice(edge_voice: str) -> str:
 def _build_gemini_tts_prompt(text: str, rate: str) -> str:
     style_prompt = GEMINI_TTS_STYLE_PROMPT.strip()
     rate_prompt = _rate_instruction(rate)
+    prompt_parts = [
+        part for part in (
+            style_prompt,
+            GEMINI_TTS_CONTINUITY_PROMPT,
+            rate_prompt,
+        )
+        if part
+    ]
 
-    if not style_prompt:
-        return f"{rate_prompt}\n\n{text}"
-
-    return f"{style_prompt} {rate_prompt}\n\n{text}"
+    return f"{' '.join(prompt_parts)}\n\n{text}"
 
 
 def gemini_tts_model_chain() -> list[str]:

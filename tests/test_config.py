@@ -262,9 +262,12 @@ def test_export_audio_max_size_is_validated() -> None:
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
         EXPORT_AUDIO_MAX_SIZE_MB=32,
+        EXPORT_AUDIO_CROSSFADE_MS=80,
     )
 
     assert settings.EXPORT_AUDIO_MAX_SIZE_MB == 32
+    assert settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED is True
+    assert settings.EXPORT_AUDIO_CROSSFADE_MS == 80
 
     with pytest.raises(ValueError):
         Settings(
@@ -272,4 +275,12 @@ def test_export_audio_max_size_is_validated() -> None:
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
             EXPORT_AUDIO_MAX_SIZE_MB=0,
+        )
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            EXPORT_AUDIO_CROSSFADE_MS=0,
         )
