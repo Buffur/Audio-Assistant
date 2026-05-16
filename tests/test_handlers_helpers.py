@@ -7,6 +7,7 @@ from handlers import premium_admin
 from handlers import reading_callbacks
 from keyboards import admin_menu as admin_menu_keyboard
 from keyboards import catalog as catalog_keyboard
+from keyboards import reading as reading_keyboard
 from texts import admin_menu as admin_menu_texts
 from texts import catalog as catalog_texts
 from texts import messages as message_texts
@@ -95,6 +96,36 @@ def test_part_audio_caption_marks_internal_audio_chunks() -> None:
         current_audio=1,
         total_audio=1,
     ) == "📄 Частина 1 з 2"
+
+
+def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
+    basic_keyboard = reading_keyboard.reading_navigation_keyboard(
+        has_next=True,
+        session_id="session-1",
+    )
+    premium_keyboard = reading_keyboard.reading_navigation_keyboard(
+        has_next=True,
+        session_id="session-1",
+        can_export_audio=True,
+    )
+
+    basic_callbacks = [
+        button.callback_data
+        for row in basic_keyboard.inline_keyboard
+        for button in row
+    ]
+    premium_callbacks = [
+        button.callback_data
+        for row in premium_keyboard.inline_keyboard
+        for button in row
+    ]
+    export_callback = reading_keyboard.build_reading_callback(
+        reading_keyboard.READ_EXPORT_AUDIO_ACTION,
+        "session-1",
+    )
+
+    assert export_callback not in basic_callbacks
+    assert export_callback in premium_callbacks
 
 
 def test_admin_menu_parses_user_callback_id() -> None:

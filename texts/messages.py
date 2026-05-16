@@ -121,3 +121,59 @@ def build_text_was_limited_text(max_length: int) -> str:
         "⚠️ Текст дуже великий. "
         f"Для стабільної роботи буде озвучено перші {max_length} символів."
     )
+
+
+EXPORT_AUDIO_ACCESS_DENIED_TEXT = (
+    "🔒 Об'єднання в один файл доступне тільки для Ліміт+."
+)
+EXPORT_AUDIO_CONCATENATING_TEXT = "⏳ Об'єдную аудіо в один файл..."
+EXPORT_AUDIO_GENERATION_ERROR = (
+    "❌ Не вдалося зібрати повну озвучку в один файл."
+)
+EXPORT_AUDIO_CAPTION_TEXT = "🎧 Повна озвучка одним файлом"
+
+
+def build_export_audio_queued_text(
+    total_parts: int,
+    queue_position: int,
+) -> str:
+    return (
+        f"⏳ Додав повну озвучку з {total_parts} частин у чергу. "
+        f"Позиція: {queue_position}."
+    )
+
+
+def build_export_audio_part_text(current_part: int, total_parts: int) -> str:
+    return (
+        f"⏳ Готую повну озвучку: частина {current_part} з {total_parts}..."
+    )
+
+
+def build_export_audio_progress_text(
+    *,
+    current_part: int,
+    total_parts: int,
+    completed_audio_chunks: int,
+    total_audio_chunks: int,
+    provider: str,
+    cache_hit: bool,
+) -> str:
+    cache_text = " з кешу" if cache_hit else ""
+
+    return (
+        f"⏳ Готую повну озвучку: частина {current_part} з {total_parts}, "
+        f"аудіо {completed_audio_chunks}/{total_audio_chunks} "
+        f"через {provider}{cache_text}..."
+    )
+
+
+def build_export_audio_too_large_text(
+    *,
+    file_size_mb: float,
+    max_size_mb: int,
+) -> str:
+    return (
+        "⚠️ Повний аудіофайл завеликий для Telegram voice: "
+        f"{file_size_mb:.1f} MB з ліміту {max_size_mb} MB. "
+        "Залишаю озвучку частинами."
+    )

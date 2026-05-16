@@ -245,7 +245,6 @@ async def _run_broadcast(
     failed_count = 0
 
     for user_id in users:
-        # Адміністратор уже отримав audio під час кешування file_id.
         if user_id == admin_id:
             success_count += 1
             continue

@@ -84,3 +84,49 @@ async def test_send_audio_chunk_enqueues_background_job(monkeypatch) -> None:
     assert captured["expected_session_id"] == "session-1"
     assert captured["status_msg"] in message.status_messages
     assert message.answers
+
+
+@pytest.mark.asyncio
+async def test_export_reading_audio_enqueues_background_job(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_export_reading_audio_now(
+        message,
+        user_id,
+        expected_session_id,
+        status_msg,
+    ) -> None:
+        captured.update(
+            {
+                "message": message,
+                "user_id": user_id,
+                "expected_session_id": expected_session_id,
+                "status_msg": status_msg,
+            }
+        )
+
+    monkeypatch.setattr(
+        reading_service,
+        "_export_reading_audio_now",
+        fake_export_reading_audio_now,
+    )
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["one", "two"],
+            "index": 1,
+        },
+    )
+
+    message = FakeMessage()
+
+    await reading_service.export_reading_audio(message, user_id=1)
+    await reading_service.close_reading_audio_queue(timeout_seconds=1.0)
+
+    assert captured["message"] is message
+    assert captured["user_id"] == 1
+    assert captured["expected_session_id"] == "session-1"
+    assert captured["status_msg"] in message.status_messages
+    assert message.answers

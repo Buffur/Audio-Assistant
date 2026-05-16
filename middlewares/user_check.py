@@ -18,13 +18,13 @@ class UserCheckMiddleware(BaseMiddleware):
             user = event.from_user
 
         if user:
-            # 1. Перевірка на бан (перехоплюємо ДО виконання коду бота)
+            # Перевірка на бан (перехоплюємо ДО виконання коду бота)
             if await is_user_banned(user.id):
                 if isinstance(event, CallbackQuery):
                     await event.answer("🚫 Ваш акаунт заблоковано.", show_alert=True)
-                return # Зупиняємо обробку
+                return # Зупина обробки
             
-            # 2. Автоматична реєстрація або оновлення часу активності
+            # Автоматична реєстрація або оновлення часу активності
             await register_or_update_user(
                 user_id=user.id,
                 username=f"@{user.username}" if user.username else "N/A",

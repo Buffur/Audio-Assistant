@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
 from collections.abc import Awaitable, Callable
 
 from aiogram.types import Message
 
+from config import EXPORT_AUDIO_MAX_SIZE_MB
 from keyboards.reading import reading_navigation_keyboard
 from services.reading_session_store import (
     cleanup_reading_session,
@@ -14,6 +16,7 @@ from services.reading_session_store import (
     update_reading_session,
 )
 from services.tts import generate_voice
+from services.usage_limits_service import is_premium_user
 from services.user_settings_service import (
     build_user_tts_provider_chain,
     get_effective_user_settings,
@@ -25,14 +28,22 @@ from texts.messages import (
     ALL_PARTS_SENT_TEXT,
     BACKGROUND_GENERATION_ERROR,
     CHUNK_AUDIO_GENERATION_ERROR,
+    EXPORT_AUDIO_CAPTION_TEXT,
+    EXPORT_AUDIO_CONCATENATING_TEXT,
+    EXPORT_AUDIO_GENERATION_ERROR,
     SESSION_NOT_FOUND_OR_FINISHED_TEXT,
     build_audio_generation_queued_text,
+    build_export_audio_part_text,
+    build_export_audio_progress_text,
+    build_export_audio_queued_text,
+    build_export_audio_too_large_text,
     build_generating_audio_progress_text,
     build_generating_chunk_text,
     build_loading_chunk_text,
     build_part_audio_caption,
     build_part_caption,
 )
+from utils.audio import concat_ogg_files
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +155,19 @@ async def _finish_generation_if_session(
         await update_reading_session(user_id, is_generating=False)
 
 
+def _export_max_size_bytes() -> int:
+    return EXPORT_AUDIO_MAX_SIZE_MB * 1024 * 1024
+
+
+def _file_size_mb(file_path: str) -> float:
+    return os.path.getsize(file_path) / (1024 * 1024)
+
+
+def _cleanup_audio_files(audio_files: list[str]) -> None:
+    for audio_path in audio_files:
+        safe_remove_file(audio_path)
+
+
 async def cleanup_session(user_id: int) -> None:
     """
     Public wrapper для handlers.
@@ -168,6 +192,177 @@ async def _send_audio_files(
         reply_markup=reply_markup,
         caption_builder=caption_builder,
     )
+
+
+async def _export_reading_audio_now(
+    message: Message,
+    user_id: int,
+    expected_session_id: str | None,
+    status_msg: Message | None,
+) -> None:
+    session = await get_reading_session(user_id)
+
+    if not _is_same_session(session, expected_session_id):
+        await safe_delete_message(status_msg)
+        return
+
+    chunks = session.get("chunks") or []
+
+    if not chunks:
+        await safe_delete_message(status_msg)
+        await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
+        return
+
+    generated_audio_files: list[str] = []
+    combined_audio_file: str | None = None
+
+    try:
+        voice_pref, rate = await get_effective_user_settings(user_id)
+        tts_provider = await get_effective_user_tts_provider(user_id)
+        total_parts = len(chunks)
+
+        for index, chunk_text in enumerate(chunks, start=1):
+            current_session = await get_reading_session(user_id)
+
+            if not _is_same_session(current_session, expected_session_id):
+                await safe_delete_message(status_msg)
+                return
+
+            await safe_edit_message(
+                status_msg,
+                build_export_audio_part_text(index, total_parts),
+            )
+
+            voice = select_voice_for_text(chunk_text, voice_pref)
+            provider_chain = build_user_tts_provider_chain(
+                tts_provider,
+                voice=voice,
+            )
+
+            async def progress_callback(
+                completed_chunks: int,
+                chunks_count: int,
+                provider: str,
+                cache_hit: bool,
+            ) -> None:
+                if chunks_count <= 1:
+                    return
+
+                await safe_edit_message(
+                    status_msg,
+                    build_export_audio_progress_text(
+                        current_part=index,
+                        total_parts=total_parts,
+                        completed_audio_chunks=completed_chunks,
+                        total_audio_chunks=chunks_count,
+                        provider=provider,
+                        cache_hit=cache_hit,
+                    ),
+                )
+
+            audio_files = await generate_voice(
+                text=chunk_text,
+                voice=voice,
+                rate=rate,
+                provider_chain=provider_chain,
+                progress_callback=progress_callback,
+            )
+
+            if not audio_files:
+                raise RuntimeError(
+                    f"TTS returned no audio files for export part {index}/{total_parts}"
+                )
+
+            generated_audio_files.extend(audio_files)
+
+        await safe_edit_message(status_msg, EXPORT_AUDIO_CONCATENATING_TEXT)
+
+        combined_audio_file = await concat_ogg_files(generated_audio_files)
+        combined_file_size_mb = _file_size_mb(combined_audio_file)
+
+        if os.path.getsize(combined_audio_file) > _export_max_size_bytes():
+            await safe_delete_message(status_msg)
+            await message.answer(
+                build_export_audio_too_large_text(
+                    file_size_mb=combined_file_size_mb,
+                    max_size_mb=EXPORT_AUDIO_MAX_SIZE_MB,
+                )
+            )
+            return
+
+        current_session = await get_reading_session(user_id)
+
+        if not _is_same_session(current_session, expected_session_id):
+            await safe_delete_message(status_msg)
+            return
+
+        await safe_delete_message(status_msg)
+
+        await _send_audio_files(
+            message=message,
+            audio_files=[combined_audio_file],
+            caption=EXPORT_AUDIO_CAPTION_TEXT,
+        )
+        combined_audio_file = None
+
+    except Exception:
+        logger.exception(
+            "ReadingService: full audio export failed user_id=%s",
+            user_id,
+        )
+        await safe_delete_message(status_msg)
+        await message.answer(EXPORT_AUDIO_GENERATION_ERROR)
+
+    finally:
+        _cleanup_audio_files(generated_audio_files)
+        safe_remove_file(combined_audio_file)
+        await _finish_generation_if_session(user_id, expected_session_id)
+
+
+async def export_reading_audio(
+    message: Message,
+    user_id: int,
+    expected_session_id: str | None = None,
+) -> None:
+    session = await get_reading_session(user_id)
+
+    if not _is_same_session(session, expected_session_id):
+        await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
+        return
+
+    chunks = session.get("chunks") or []
+    session_id = session.get("session_id", "legacy")
+
+    if not chunks:
+        await cleanup_session(user_id)
+        await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
+        return
+
+    await update_reading_session(user_id, is_generating=True)
+
+    queue = _ensure_audio_generation_queue()
+    queued_position = queue.qsize() + 1
+    status_msg = await message.answer(
+        build_export_audio_queued_text(
+            total_parts=len(chunks),
+            queue_position=queued_position,
+        )
+    )
+
+    async def job() -> None:
+        await _export_reading_audio_now(
+            message=message,
+            user_id=user_id,
+            expected_session_id=session_id,
+            status_msg=status_msg,
+        )
+
+    try:
+        queue.put_nowait(job)
+    except asyncio.QueueFull:
+        await safe_delete_message(status_msg)
+        await _finish_generation_if_session(user_id, session_id)
+        await message.answer(BACKGROUND_GENERATION_ERROR)
 
 
 async def reply_with_voice(
@@ -435,9 +630,14 @@ async def _send_audio_chunk_now(
             index=new_index,
         )
 
+        can_export_audio = (
+            await is_premium_user(user_id)
+            and (len(chunks) > 1 or len(audio_files) > 1)
+        )
         keyboard = reading_navigation_keyboard(
             has_next=has_next,
             session_id=current_session_id,
+            can_export_audio=can_export_audio,
         )
         part_caption = build_part_caption(index + 1, len(chunks))
 

@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 READ_NEXT_ACTION = "read_next"
 READ_SUMMARY_ACTION = "read_summary"
 READ_STOP_ACTION = "read_stop"
+READ_EXPORT_AUDIO_ACTION = "read_export_audio"
 
 CALLBACK_SEPARATOR = ":"
 
@@ -39,7 +40,8 @@ def parse_reading_callback(callback_data: str) -> tuple[str, str | None]:
 
 def reading_navigation_keyboard(
     has_next: bool,
-    session_id: str
+    session_id: str,
+    can_export_audio: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Клавіатура для навігації під час читання основного тексту.
@@ -55,6 +57,17 @@ def reading_navigation_keyboard(
                 text="▶️ Слухати далі",
                 callback_data=build_reading_callback(
                     READ_NEXT_ACTION,
+                    session_id
+                )
+            )
+        ])
+
+    if can_export_audio:
+        keyboard.append([
+            InlineKeyboardButton(
+                text="🎧 Зібрати в один файл",
+                callback_data=build_reading_callback(
+                    READ_EXPORT_AUDIO_ACTION,
                     session_id
                 )
             )
@@ -80,14 +93,31 @@ def reading_navigation_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def summary_only_keyboard(session_id: str) -> InlineKeyboardMarkup:
+def summary_only_keyboard(
+    session_id: str,
+    can_export_audio: bool = False,
+) -> InlineKeyboardMarkup:
     """
     Клавіатура для попередніх voice-повідомлень.
 
     Коли користувач натиснув «Слухати далі», ми прибираємо тільки цю кнопку,
     але залишаємо «Короткий зміст» і «Закінчити».
     """
+    export_rows = []
+
+    if can_export_audio:
+        export_rows.append([
+            InlineKeyboardButton(
+                text="🎧 Зібрати в один файл",
+                callback_data=build_reading_callback(
+                    READ_EXPORT_AUDIO_ACTION,
+                    session_id
+                )
+            )
+        ])
+
     return InlineKeyboardMarkup(inline_keyboard=[
+        *export_rows,
         [
             InlineKeyboardButton(
                 text="📝 Короткий зміст",
@@ -109,7 +139,8 @@ def summary_only_keyboard(session_id: str) -> InlineKeyboardMarkup:
 
 def summary_navigation_keyboard(
     has_next: bool,
-    session_id: str
+    session_id: str,
+    can_export_audio: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Клавіатура після короткого змісту.
@@ -118,6 +149,17 @@ def summary_navigation_keyboard(
     додається кнопка продовження читання.
     """
     keyboard = []
+
+    if can_export_audio:
+        keyboard.append([
+            InlineKeyboardButton(
+                text="🎧 Зібрати в один файл",
+                callback_data=build_reading_callback(
+                    READ_EXPORT_AUDIO_ACTION,
+                    session_id
+                )
+            )
+        ])
 
     if has_next:
         keyboard.append([

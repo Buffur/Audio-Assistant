@@ -254,3 +254,22 @@ def test_audio_cache_resource_settings_are_validated() -> None:
     assert settings.AUDIO_CACHE_MAX_SIZE_MB == 256
     assert settings.AUDIO_CACHE_MAX_AGE_DAYS == 7
     assert settings.AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS == 300
+
+
+def test_export_audio_max_size_is_validated() -> None:
+    settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+        EXPORT_AUDIO_MAX_SIZE_MB=32,
+    )
+
+    assert settings.EXPORT_AUDIO_MAX_SIZE_MB == 32
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            EXPORT_AUDIO_MAX_SIZE_MB=0,
+        )

@@ -6,6 +6,7 @@ from contextlib import suppress
 from aiogram import F, Router, types
 
 from keyboards.reading import (
+    READ_EXPORT_AUDIO_ACTION,
     READ_NEXT_ACTION,
     READ_STOP_ACTION,
     READ_SUMMARY_ACTION,
@@ -16,6 +17,7 @@ from keyboards.reading import (
 from services.parser import summarize_text_with_ai
 from services.reading_service import (
     cleanup_session,
+    export_reading_audio,
     reply_with_voice,
     safe_delete_message,
     send_audio_chunk,
@@ -27,7 +29,10 @@ from services.reading_session_store import (
     try_start_generation,
 )
 from services.tts import generate_voice
-from services.usage_limits_service import reserve_summary_generation
+from services.usage_limits_service import (
+    is_premium_user,
+    reserve_summary_generation,
+)
 from services.user_settings_service import (
     build_user_tts_provider_chain,
     get_effective_user_settings,
@@ -37,6 +42,8 @@ from services.voice_selector import select_voice_for_text
 from services.voice_sender import send_voice_files
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
+    EXPORT_AUDIO_ACCESS_DENIED_TEXT,
+    EXPORT_AUDIO_GENERATION_ERROR,
     OUTDATED_READING_BUTTON_TEXT,
     READING_STOPPED_ALERT_TEXT,
     READING_STOPPED_MESSAGE_TEXT,
@@ -125,7 +132,10 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
     if callback_session_id:
         await _safe_edit_reply_markup(
             callback,
-            reply_markup=summary_only_keyboard(callback_session_id),
+            reply_markup=summary_only_keyboard(
+                callback_session_id,
+                can_export_audio=await is_premium_user(user_id),
+            ),
         )
     else:
         await _safe_edit_reply_markup(callback, reply_markup=None)
@@ -282,6 +292,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         keyboard = summary_navigation_keyboard(
             has_next=has_next,
             session_id=session_id,
+            can_export_audio=await is_premium_user(user_id),
         )
 
         await send_voice_files(
@@ -317,6 +328,72 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
     finally:
         if await has_reading_session(user_id):
             await finish_generation(user_id)
+
+
+@router.callback_query(F.data.startswith(READ_EXPORT_AUDIO_ACTION))
+async def process_read_export_audio(callback: types.CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    _, callback_session_id = parse_reading_callback(callback.data)
+
+    session = await get_reading_session(user_id)
+
+    if not session:
+        await callback.answer(
+            SESSION_NOT_FOUND_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if not _is_matching_session(session, callback_session_id):
+        await callback.answer(
+            OUTDATED_READING_BUTTON_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if not await is_premium_user(user_id):
+        await callback.answer(
+            EXPORT_AUDIO_ACCESS_DENIED_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if not await try_start_generation(user_id):
+        await callback.answer(
+            WAIT_AUDIO_PROCESSING_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if not callback.message:
+        await callback.answer(
+            SESSION_NOT_FOUND_TEXT,
+            show_alert=True,
+        )
+
+        if await has_reading_session(user_id):
+            await finish_generation(user_id)
+
+        return
+
+    await callback.answer()
+
+    try:
+        await export_reading_audio(
+            callback.message,
+            user_id,
+            expected_session_id=callback_session_id,
+        )
+    except Exception:
+        logger.exception(
+            "ReadingCallbacks: error while queueing full audio export user_id=%s",
+            user_id,
+        )
+
+        if await has_reading_session(user_id):
+            await finish_generation(user_id)
+
+        await callback.message.answer(EXPORT_AUDIO_GENERATION_ERROR)
 
 
 @router.callback_query(F.data.startswith(READ_STOP_ACTION))
