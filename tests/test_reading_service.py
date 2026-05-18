@@ -10,6 +10,7 @@ class FakeStatusMessage:
         self.text = text
         self.edits: list[str] = []
         self.deleted = False
+        self.message_id = 42
 
     async def edit_text(self, text: str) -> None:
         self.edits.append(text)
@@ -23,6 +24,7 @@ class FakeMessage:
     def __init__(self) -> None:
         self.answers: list[str] = []
         self.status_messages: list[FakeStatusMessage] = []
+        self.chat = type("FakeChat", (), {"id": 1001})()
 
     async def answer(self, text: str, **kwargs):
         self.answers.append(text)
@@ -84,6 +86,98 @@ async def test_send_audio_chunk_enqueues_background_job(monkeypatch) -> None:
     assert captured["expected_session_id"] == "session-1"
     assert captured["status_msg"] in message.status_messages
     assert message.answers
+
+
+@pytest.mark.asyncio
+async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_queue_position() -> int:
+        return 7
+
+    async def fake_enqueue(job) -> None:
+        captured.update(job)
+
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(
+        reading_service,
+        "_redis_audio_queue_position",
+        fake_queue_position,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_enqueue_redis_audio_job",
+        fake_enqueue,
+    )
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-redis",
+            "chunks": ["one"],
+            "index": 0,
+        },
+    )
+
+    message = FakeMessage()
+
+    await reading_service.send_audio_chunk(message, user_id=1)
+
+    assert captured == {
+        "type": "send_chunk",
+        "user_id": 1,
+        "chat_id": 1001,
+        "session_id": "session-redis",
+        "status_message_id": 42,
+    }
+    assert "7" in message.answers[0]
+
+
+@pytest.mark.asyncio
+async def test_send_audio_chunk_reports_full_redis_queue_without_memory_fallback(
+    monkeypatch,
+) -> None:
+    async def fake_queue_position() -> int:
+        return 20
+
+    async def fake_enqueue(job) -> None:
+        raise reading_service.asyncio.QueueFull
+
+    def fail_memory_queue():
+        raise AssertionError("full Redis queue must not fall back to memory queue")
+
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(
+        reading_service,
+        "_redis_audio_queue_position",
+        fake_queue_position,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_enqueue_redis_audio_job",
+        fake_enqueue,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_ensure_audio_generation_queue",
+        fail_memory_queue,
+    )
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-full",
+            "chunks": ["one"],
+            "index": 0,
+        },
+    )
+
+    message = FakeMessage()
+
+    await reading_service.send_audio_chunk(message, user_id=1)
+
+    assert reading_service.AUDIO_QUEUE_FULL_TEXT in message.answers
+    assert message.status_messages[0].deleted is True
 
 
 @pytest.mark.asyncio

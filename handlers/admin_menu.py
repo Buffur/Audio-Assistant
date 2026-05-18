@@ -10,8 +10,8 @@ from aiogram.types import Message
 from config import ADMIN_IDS
 from database.db import (
     ban_user,
+    get_admin_stats_snapshot,
     get_all_users_detailed,
-    get_daily_usage,
     get_service_metrics_summary,
     unban_user,
 )
@@ -228,46 +228,17 @@ async def _show_admin_limit_edit(
 
 
 async def _build_stats_text() -> str:
-    users = await get_all_users_detailed()
-
-    total_users = len(users)
-    banned_users = sum(1 for user in users if user.get("is_banned"))
-    active_users = total_users - banned_users
-
-    premium_users = sum(
-        1 for user in users
-        if (user.get("plan") or "free") == "premium"
-    )
-    free_users = total_users - premium_users
-
     today = datetime.now().date().isoformat()
-
-    usage_totals = {
-        "text_messages_processed": 0,
-        "files_processed": 0,
-        "ocr_processed": 0,
-        "links_processed": 0,
-        "summaries_generated": 0,
-    }
-
-    for user in users:
-        usage = await get_daily_usage(
-            user_id=user["user_id"],
-            usage_date=today
-        )
-
-        for key in usage_totals:
-            usage_totals[key] += usage.get(key, 0)
-
+    stats = await get_admin_stats_snapshot(today)
     service_metrics = await get_service_metrics_summary(days=1)
 
     return build_admin_stats_text(
-        total_users=total_users,
-        active_users=active_users,
-        banned_users=banned_users,
-        free_users=free_users,
-        premium_users=premium_users,
-        usage_totals=usage_totals,
+        total_users=stats["total_users"],
+        active_users=stats["active_users"],
+        banned_users=stats["banned_users"],
+        free_users=stats["free_users"],
+        premium_users=stats["premium_users"],
+        usage_totals=stats["usage_totals"],
         service_metrics=service_metrics,
     )
 

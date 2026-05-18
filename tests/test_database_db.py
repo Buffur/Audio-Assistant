@@ -60,6 +60,38 @@ async def test_usage_increment_under_limit_is_atomic(workspace_tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_admin_stats_snapshot_uses_aggregated_usage(workspace_tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "admin.sqlite"))
+
+    await db_module.init_db()
+    await db_module.register_or_update_user(1, "@one", "One")
+    await db_module.register_or_update_user(2, "@two", "Two")
+    await db_module.register_or_update_user(3, "@three", "Three")
+    await db_module.ban_user(2)
+    await db_module.set_user_premium(3, premium_until=None)
+
+    await db_module.increment_daily_usage(1, "2026-05-19", "text_messages_processed", 2)
+    await db_module.increment_daily_usage(2, "2026-05-19", "files_processed", 1)
+    await db_module.increment_daily_usage(3, "2026-05-19", "summaries_generated", 4)
+    await db_module.increment_daily_usage(3, "2026-05-18", "links_processed", 10)
+
+    snapshot = await db_module.get_admin_stats_snapshot("2026-05-19")
+
+    assert snapshot["total_users"] == 3
+    assert snapshot["active_users"] == 2
+    assert snapshot["banned_users"] == 1
+    assert snapshot["premium_users"] == 1
+    assert snapshot["free_users"] == 2
+    assert snapshot["usage_totals"] == {
+        "text_messages_processed": 2,
+        "files_processed": 1,
+        "ocr_processed": 0,
+        "links_processed": 0,
+        "summaries_generated": 4,
+    }
+
+
+@pytest.mark.asyncio
 async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "history.sqlite"))
 

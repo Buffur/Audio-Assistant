@@ -38,6 +38,11 @@ services:
       AUDIO_CACHE_DIR: /app/data/audio_cache
       AUDIO_CACHE_ENABLED: "1"
       RATE_LIMIT_BACKEND: redis
+      READING_SESSION_BACKEND: redis
+      READING_AUDIO_QUEUE_BACKEND: redis
+      READING_AUDIO_QUEUE_MAX_SIZE: "20"
+      LOG_FORMAT: text
+      METRICS_REDIS_STREAM_ENABLED: "1"
     volumes:
       - ./data:/app/data
     depends_on:

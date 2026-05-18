@@ -10,6 +10,10 @@ os.environ.setdefault("BOT_TOKEN", "123456:test_bot_token")
 os.environ.setdefault("GEMINI_API_KEY", "test_gemini_api_key")
 os.environ.setdefault("ADMIN_IDS", "123456789")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("READING_SESSION_BACKEND", "memory")
+os.environ.setdefault("READING_AUDIO_QUEUE_BACKEND", "memory")
+os.environ.setdefault("READING_AUDIO_QUEUE_MAX_SIZE", "20")
+os.environ.setdefault("METRICS_REDIS_STREAM_ENABLED", "0")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_RUNTIME_DIR = PROJECT_ROOT / ".test_runtime"

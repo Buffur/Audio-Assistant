@@ -53,14 +53,4 @@ def settings_keyboard() -> InlineKeyboardMarkup:
                 callback_data=SPEED_PLUS_50_CALLBACK
             ),
         ],
-        [
-            InlineKeyboardButton(
-                text="🔈 Edge",
-                callback_data=TTS_PROVIDER_EDGE_CALLBACK
-            ),
-            InlineKeyboardButton(
-                text="🔊 Piper",
-                callback_data=TTS_PROVIDER_PIPER_CALLBACK
-            ),
-        ],
     ])

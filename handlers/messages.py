@@ -7,7 +7,7 @@ import uuid
 
 from aiogram import Router, types
 
-from services.content_extractor import extract_text_from_message
+from services.content_extractor import SUPPORTED_FORMATS_ERROR, extract_text_from_message
 from services.document_history_service import save_document_history_from_message
 from services.reading_service import (
     cleanup_session,
@@ -16,6 +16,7 @@ from services.reading_service import (
     send_audio_chunk,
 )
 from services.reading_session_store import (
+    get_reading_session,
     set_reading_session,
 )
 from services.usage_limits_service import (
@@ -29,6 +30,7 @@ from texts.messages import (
     TEXT_SPLIT_ERROR,
     UNKNOWN_COMMAND_TEXT,
     UNSUPPORTED_MESSAGE_TEXT,
+    WAIT_CURRENT_AUDIO_REQUEST_TEXT,
     build_large_text_split_text,
     build_text_was_limited_text,
 )
@@ -130,11 +132,17 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         await _handle_unsupported_message(message, user_id)
         return
 
-    await cleanup_session(user_id)
-
     if message.text and message.text.startswith("/"):
         await message.answer(UNKNOWN_COMMAND_TEXT)
         return
+
+    current_session = await get_reading_session(user_id)
+
+    if current_session and current_session.get("is_generating"):
+        await message.answer(WAIT_CURRENT_AUDIO_REQUEST_TEXT)
+        return
+
+    await cleanup_session(user_id)
 
     usage_type = detect_input_usage_type(message)
 
@@ -151,6 +159,12 @@ async def _process_message(message: types.Message, user_id: int) -> None:
 
     if not text or not text.strip() or is_error_text(text):
         error_text = text if is_error_text(text) else GENERIC_TEXT_EXTRACT_ERROR
+
+        if error_text == SUPPORTED_FORMATS_ERROR:
+            await safe_delete_message(status_msg)
+            await message.answer(error_text)
+            return
+
         await reply_with_voice(message, user_id, error_text, status_msg)
         return
 

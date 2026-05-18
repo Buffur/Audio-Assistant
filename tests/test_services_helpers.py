@@ -127,18 +127,10 @@ async def test_user_settings_service_defaults_and_validation(monkeypatch) -> Non
     assert tts_provider == "edge"
     assert user_settings_service.build_user_tts_provider_chain("edge") == [
         "edge",
-        "piper",
     ]
     assert user_settings_service.build_user_tts_provider_chain("piper") == [
-        "piper",
         "edge",
     ]
-    assert user_settings_service.get_tts_provider_display("piper") == "Piper"
-    monkeypatch.setattr(
-        user_settings_service,
-        "is_piper_voice_configured",
-        lambda voice: False,
-    )
     assert user_settings_service.build_user_tts_provider_chain(
         "piper",
         voice="en-US-JennyNeural",
@@ -151,23 +143,6 @@ async def test_user_settings_service_defaults_and_validation(monkeypatch) -> Non
         "gemini",
         voice="en-US-JennyNeural",
     ) == ["gemini", "edge"]
-    monkeypatch.setattr(
-        user_settings_service,
-        "is_piper_voice_configured",
-        lambda voice: True,
-    )
-    assert user_settings_service.build_user_tts_provider_chain(
-        "piper",
-        voice="en-US-JennyNeural",
-    ) == ["piper", "edge"]
-    assert user_settings_service.build_user_tts_provider_chain(
-        "edge",
-        voice="en-US-JennyNeural",
-    ) == ["edge", "piper"]
-    assert user_settings_service.build_user_tts_provider_chain(
-        "gemini",
-        voice="en-US-JennyNeural",
-    ) == ["gemini", "edge", "piper"]
 
     monkeypatch.setattr(
         user_settings_service,

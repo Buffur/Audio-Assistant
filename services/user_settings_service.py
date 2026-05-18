@@ -9,7 +9,6 @@ from database.db import (
     set_user_settings,
     set_user_tts_provider,
 )
-from services.piper_tts import is_piper_voice_configured
 from services.usage_limits_service import is_premium_user
 
 logger = logging.getLogger(__name__)
@@ -27,11 +26,10 @@ DEFAULT_USER_TTS_PROVIDER = "edge"
 
 TTS_PROVIDER_DISPLAY = {
     "edge": "Edge",
-    "piper": "Piper",
     "gemini": "Gemini (Ліміт+)",
 }
 
-ALLOWED_USER_TTS_PROVIDERS = {"edge", "piper"}
+ALLOWED_USER_TTS_PROVIDERS = {"edge"}
 
 
 async def get_effective_user_settings(user_id: int) -> tuple[str, str]:
@@ -83,8 +81,8 @@ async def get_effective_user_tts_provider(user_id: int) -> str:
     """
     Повертає TTS provider користувача.
 
-    Для Ліміт+ примусово використовуємо Gemini з fallback-ланцюжком нижче.
-    Для звичайних користувачів дефолт — Edge, Piper лишається ручним вибором.
+    Для Ліміт+ примусово використовуємо Gemini з fallback на Edge.
+    Для звичайних користувачів єдиний user-facing provider — Edge.
     """
     if await is_premium_user(user_id):
         return "gemini"
@@ -119,28 +117,13 @@ def build_user_tts_provider_chain(
     """
     Формує fallback-ланцюжок для користувацької озвучки.
     """
-    piper_available = voice is None or is_piper_voice_configured(voice)
-
     if tts_provider == "gemini":
-        providers = ["gemini", "edge"]
-
-        if piper_available:
-            providers.append("piper")
-
-        return providers
+        return ["gemini", "edge"]
 
     if tts_provider == "edge":
-        providers = ["edge"]
-
-        if piper_available:
-            providers.append("piper")
-
-        return providers
-
-    if not piper_available:
         return ["edge"]
 
-    return ["piper", "edge"]
+    return [DEFAULT_USER_TTS_PROVIDER]
 
 
 def is_male_voice(voice: str) -> bool:

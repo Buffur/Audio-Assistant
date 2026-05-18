@@ -312,6 +312,61 @@ async def get_all_users_detailed() -> list[dict[str, Any]]:
     ]
 
 
+async def get_admin_stats_snapshot(usage_date: str) -> dict[str, Any]:
+    """
+    Повертає агреговану адмін-статистику без N+1 запитів по користувачах.
+    """
+    async with get_db_connection() as db:
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS total_users,
+                COALESCE(SUM(CASE WHEN is_banned = 1 THEN 1 ELSE 0 END), 0)
+                    AS banned_users,
+                COALESCE(
+                    SUM(CASE WHEN COALESCE(plan, 'free') = 'premium' THEN 1 ELSE 0 END),
+                    0
+                ) AS premium_users
+            FROM users
+            """
+        ) as cursor:
+            users_row = await cursor.fetchone()
+
+        async with db.execute(
+            """
+            SELECT
+                COALESCE(SUM(text_messages_processed), 0),
+                COALESCE(SUM(files_processed), 0),
+                COALESCE(SUM(ocr_processed), 0),
+                COALESCE(SUM(links_processed), 0),
+                COALESCE(SUM(summaries_generated), 0)
+            FROM usage_daily
+            WHERE usage_date = ?
+            """,
+            (usage_date,),
+        ) as cursor:
+            usage_row = await cursor.fetchone()
+
+    total_users = int(users_row[0]) if users_row else 0
+    banned_users = int(users_row[1]) if users_row else 0
+    premium_users = int(users_row[2]) if users_row else 0
+
+    return {
+        "total_users": total_users,
+        "active_users": total_users - banned_users,
+        "banned_users": banned_users,
+        "premium_users": premium_users,
+        "free_users": total_users - premium_users,
+        "usage_totals": {
+            "text_messages_processed": int(usage_row[0]) if usage_row else 0,
+            "files_processed": int(usage_row[1]) if usage_row else 0,
+            "ocr_processed": int(usage_row[2]) if usage_row else 0,
+            "links_processed": int(usage_row[3]) if usage_row else 0,
+            "summaries_generated": int(usage_row[4]) if usage_row else 0,
+        },
+    }
+
+
 async def ban_user(user_id: int) -> None:
     async with get_db_connection() as db:
         await db.execute(

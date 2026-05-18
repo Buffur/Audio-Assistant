@@ -14,6 +14,9 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 from config import (
     ADMIN_IDS,
     BOT_TOKEN,
+    LOG_FORMAT,
+    LOG_LEVEL,
+    LOG_SERVICE_NAME,
     MAINTENANCE_CLEANUP_INTERVAL_SECONDS,
     RATE_LIMIT_BACKEND,
     RATE_LIMIT_MAX_EVENTS,
@@ -21,14 +24,16 @@ from config import (
     RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
 )
 from database.db import init_db
+from services.logging_config import setup_logging
 
 # ============================================================
 # LOGGING
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+setup_logging(
+    level=LOG_LEVEL,
+    log_format=LOG_FORMAT,
+    service_name=LOG_SERVICE_NAME,
 )
 
 logger = logging.getLogger(__name__)

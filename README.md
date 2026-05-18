@@ -55,9 +55,8 @@ Tesseract і PaddleOCR були протестовані та прибрані:
 
 Поточний пріоритет озвучки:
 
-- Для звичайних користувачів: `Edge -> Piper`.
-- Якщо користувач вручну обрав Piper: `Piper -> Edge`.
-- Для `Ліміт+`: `Gemini -> Edge -> Piper`.
+- Для звичайних користувачів: `Edge`.
+- Для `Ліміт+`: `Gemini -> Edge`.
 
 Gemini TTS підтримує вибір жіночого та чоловічого голосу на основі вибраного користувачем голосу.
 Для стабільності на великих матеріалах Gemini TTS використовує менші внутрішні фрагменти тексту, ніж Edge/Piper: за замовчуванням до `1600` символів на audio-запит. Для audio-запитів також є окремий timeout `120` секунд, щоб довша озвучка не падала через глобальний Gemini timeout для OCR/AI. Це зменшує ризик timeout, порожнього audio payload і drift у довгих відповідях preview-моделей.
@@ -277,13 +276,14 @@ GEMINI_OCR_MODEL=gemini-3.1-flash-lite
 GEMINI_OCR_MODEL_CHAIN=gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite
 
 TTS_PROVIDER=edge
-TTS_PROVIDER_CHAIN=edge,piper
+TTS_PROVIDER_CHAIN=edge
 GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
 GEMINI_TTS_MODEL_CHAIN=gemini-2.5-flash-preview-tts
 GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=120
 GEMINI_TTS_CHUNK_MAX_LENGTH=1600
 
 RATE_LIMIT_BACKEND=redis
+READING_AUDIO_QUEUE_MAX_SIZE=20
 ```
 
 3. Запустити:
@@ -305,7 +305,7 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-Для Piper потрібні voice-моделі у `data/piper` або явні шляхи через `PIPER_MODEL_PATH` і `PIPER_CONFIG_PATH`.
+Piper лишається технічно доступним у коді, але не використовується у користувацькому меню за замовчуванням.
 
 ## Тести
 

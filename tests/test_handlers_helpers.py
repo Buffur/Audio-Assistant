@@ -8,6 +8,7 @@ from handlers import reading_callbacks
 from keyboards import admin_menu as admin_menu_keyboard
 from keyboards import catalog as catalog_keyboard
 from keyboards import reading as reading_keyboard
+from keyboards import settings as settings_keyboard
 from texts import admin_menu as admin_menu_texts
 from texts import catalog as catalog_texts
 from texts import messages as message_texts
@@ -126,6 +127,18 @@ def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
 
     assert export_callback not in basic_callbacks
     assert export_callback in premium_callbacks
+
+
+def test_settings_keyboard_does_not_show_tts_provider_choice() -> None:
+    keyboard = settings_keyboard.settings_keyboard()
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+
+    assert settings_keyboard.TTS_PROVIDER_EDGE_CALLBACK not in callbacks
+    assert settings_keyboard.TTS_PROVIDER_PIPER_CALLBACK not in callbacks
 
 
 def test_admin_menu_parses_user_callback_id() -> None:

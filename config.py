@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     RATE_LIMIT_BACKEND: str = "memory"
 
     READING_SESSION_TTL_SECONDS: int = 45 * 60
+    READING_SESSION_BACKEND: str = "redis"
+    READING_AUDIO_QUEUE_BACKEND: str = "redis"
+    READING_AUDIO_QUEUE_REDIS_KEY: str = "reading:audio:queue"
+    READING_AUDIO_QUEUE_MAX_SIZE: int = 20
     EXPORT_AUDIO_MAX_SIZE_MB: int = 48
     EXPORT_AUDIO_SMOOTH_MERGE_ENABLED: bool = True
     EXPORT_AUDIO_CROSSFADE_MS: int = 120
@@ -113,6 +117,17 @@ class Settings(BaseSettings):
     FREE_DAILY_OCR_LIMIT: int = 10
     FREE_DAILY_LINK_LIMIT: int = 20
     FREE_DAILY_SUMMARY_LIMIT: int = 5
+
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"
+    LOG_SERVICE_NAME: str = "audio-assistant"
+
+    METRICS_REDIS_STREAM_ENABLED: bool = False
+    METRICS_REDIS_STREAM_KEY: str = "metrics:service"
+    METRICS_REDIS_STREAM_MAXLEN: int = 10_000
+    METRICS_ALERT_WEBHOOK_URL: str = ""
+    METRICS_ALERT_ON_FAILURE: bool = True
+    METRICS_ALERT_TIMEOUT_SECONDS: int = 5
 
     @field_validator("BOT_TOKEN", "GEMINI_API_KEY")
     @classmethod
@@ -198,6 +213,7 @@ class Settings(BaseSettings):
         "RATE_LIMIT_PERIOD_SECONDS",
         "RATE_LIMIT_WARNING_COOLDOWN_SECONDS",
         "READING_SESSION_TTL_SECONDS",
+        "READING_AUDIO_QUEUE_MAX_SIZE",
         "EXPORT_AUDIO_MAX_SIZE_MB",
         "EXPORT_AUDIO_CROSSFADE_MS",
         "FREE_DAILY_TEXT_MESSAGE_LIMIT",
@@ -219,6 +235,8 @@ class Settings(BaseSettings):
         "AUDIO_CACHE_MAX_SIZE_MB",
         "AUDIO_CACHE_MAX_AGE_DAYS",
         "AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS",
+        "METRICS_REDIS_STREAM_MAXLEN",
+        "METRICS_ALERT_TIMEOUT_SECONDS",
     )
     @classmethod
     def _validate_positive_int(cls, value: int, info: Any) -> int:
@@ -313,13 +331,39 @@ class Settings(BaseSettings):
 
         return normalized_models
 
-    @field_validator("RATE_LIMIT_BACKEND")
+    @field_validator(
+        "RATE_LIMIT_BACKEND",
+        "READING_SESSION_BACKEND",
+        "READING_AUDIO_QUEUE_BACKEND",
+    )
     @classmethod
-    def _validate_rate_limit_backend(cls, value: str) -> str:
+    def _validate_backend(cls, value: str, info: Any) -> str:
         value = value.strip().lower()
 
         if value not in {"memory", "redis"}:
-            raise ValueError("RATE_LIMIT_BACKEND must be 'memory' or 'redis'")
+            raise ValueError(f"{info.field_name} must be 'memory' or 'redis'")
+
+        return value
+
+    @field_validator("LOG_FORMAT")
+    @classmethod
+    def _validate_log_format(cls, value: str) -> str:
+        value = value.strip().lower()
+
+        if value not in {"text", "json"}:
+            raise ValueError("LOG_FORMAT must be 'text' or 'json'")
+
+        return value
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def _validate_log_level(cls, value: str) -> str:
+        value = value.strip().upper()
+
+        if value not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError(
+                "LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL"
+            )
 
         return value
 
@@ -476,6 +520,10 @@ RATE_LIMIT_WARNING_COOLDOWN_SECONDS = (
 RATE_LIMIT_BACKEND = settings.RATE_LIMIT_BACKEND
 
 READING_SESSION_TTL_SECONDS = settings.READING_SESSION_TTL_SECONDS
+READING_SESSION_BACKEND = settings.READING_SESSION_BACKEND
+READING_AUDIO_QUEUE_BACKEND = settings.READING_AUDIO_QUEUE_BACKEND
+READING_AUDIO_QUEUE_REDIS_KEY = settings.READING_AUDIO_QUEUE_REDIS_KEY
+READING_AUDIO_QUEUE_MAX_SIZE = settings.READING_AUDIO_QUEUE_MAX_SIZE
 EXPORT_AUDIO_MAX_SIZE_MB = settings.EXPORT_AUDIO_MAX_SIZE_MB
 EXPORT_AUDIO_SMOOTH_MERGE_ENABLED = settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED
 EXPORT_AUDIO_CROSSFADE_MS = settings.EXPORT_AUDIO_CROSSFADE_MS
@@ -493,3 +541,14 @@ FREE_DAILY_FILE_LIMIT = settings.FREE_DAILY_FILE_LIMIT
 FREE_DAILY_OCR_LIMIT = settings.FREE_DAILY_OCR_LIMIT
 FREE_DAILY_LINK_LIMIT = settings.FREE_DAILY_LINK_LIMIT
 FREE_DAILY_SUMMARY_LIMIT = settings.FREE_DAILY_SUMMARY_LIMIT
+
+LOG_LEVEL = settings.LOG_LEVEL
+LOG_FORMAT = settings.LOG_FORMAT
+LOG_SERVICE_NAME = settings.LOG_SERVICE_NAME
+
+METRICS_REDIS_STREAM_ENABLED = settings.METRICS_REDIS_STREAM_ENABLED
+METRICS_REDIS_STREAM_KEY = settings.METRICS_REDIS_STREAM_KEY
+METRICS_REDIS_STREAM_MAXLEN = settings.METRICS_REDIS_STREAM_MAXLEN
+METRICS_ALERT_WEBHOOK_URL = settings.METRICS_ALERT_WEBHOOK_URL
+METRICS_ALERT_ON_FAILURE = settings.METRICS_ALERT_ON_FAILURE
+METRICS_ALERT_TIMEOUT_SECONDS = settings.METRICS_ALERT_TIMEOUT_SECONDS

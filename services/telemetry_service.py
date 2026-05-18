@@ -3,12 +3,22 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import aiohttp
+from redis.exceptions import RedisError
+
 from config import (
     GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD,
     GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD,
+    METRICS_ALERT_ON_FAILURE,
+    METRICS_ALERT_TIMEOUT_SECONDS,
+    METRICS_ALERT_WEBHOOK_URL,
+    METRICS_REDIS_STREAM_ENABLED,
+    METRICS_REDIS_STREAM_KEY,
+    METRICS_REDIS_STREAM_MAXLEN,
     TTS_ESTIMATED_COST_PER_1K_CHARS_USD,
 )
 from database.db import add_service_metric
+from services.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +99,76 @@ async def _write_service_metric(metric: dict[str, Any]) -> None:
     await add_service_metric(**metric)
 
 
+def _metric_stream_fields(metric: dict[str, Any]) -> dict[str, str]:
+    return {
+        key: "" if value is None else str(value)
+        for key, value in metric.items()
+    }
+
+
+async def _publish_metric_to_redis(metric: dict[str, Any]) -> None:
+    if not METRICS_REDIS_STREAM_ENABLED:
+        return
+
+    client = await get_redis_client()
+    await client.xadd(
+        METRICS_REDIS_STREAM_KEY,
+        fields=_metric_stream_fields(metric),
+        maxlen=METRICS_REDIS_STREAM_MAXLEN,
+        approximate=True,
+    )
+
+
+async def _send_metric_alert(metric: dict[str, Any]) -> None:
+    if not METRICS_ALERT_WEBHOOK_URL or not METRICS_ALERT_ON_FAILURE:
+        return
+
+    if metric.get("success"):
+        return
+
+    timeout = aiohttp.ClientTimeout(total=METRICS_ALERT_TIMEOUT_SECONDS)
+    payload = {
+        "type": "service_metric_failure",
+        "metric": metric,
+    }
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(METRICS_ALERT_WEBHOOK_URL, json=payload) as response:
+            if response.status >= 400:
+                logger.warning(
+                    "Telemetry: alert webhook returned status=%s provider=%s operation=%s",
+                    response.status,
+                    metric.get("provider"),
+                    metric.get("operation"),
+                )
+
+
+async def _publish_external_metric(metric: dict[str, Any]) -> None:
+    try:
+        await _publish_metric_to_redis(metric)
+    except RedisError:
+        logger.exception(
+            "Telemetry: failed to publish metric to Redis stream provider=%s operation=%s",
+            metric.get("provider"),
+            metric.get("operation"),
+        )
+    except Exception:
+        logger.exception(
+            "Telemetry: unexpected Redis metric export error provider=%s operation=%s",
+            metric.get("provider"),
+            metric.get("operation"),
+        )
+
+    try:
+        await _send_metric_alert(metric)
+    except Exception:
+        logger.exception(
+            "Telemetry: failed to send metric alert provider=%s operation=%s",
+            metric.get("provider"),
+            metric.get("operation"),
+        )
+
+
 async def _telemetry_worker(queue: asyncio.Queue[dict[str, Any]]) -> None:
     while True:
         metric = await queue.get()
@@ -102,6 +182,18 @@ async def _telemetry_worker(queue: asyncio.Queue[dict[str, Any]]) -> None:
         except Exception:
             logger.exception(
                 "Telemetry: failed to write service metric provider=%s operation=%s",
+                metric.get("provider"),
+                metric.get("operation"),
+            )
+
+        try:
+            await _publish_external_metric(metric)
+        except asyncio.CancelledError:
+            raise
+
+        except Exception:
+            logger.exception(
+                "Telemetry: failed to publish external metric provider=%s operation=%s",
                 metric.get("provider"),
                 metric.get("operation"),
             )
