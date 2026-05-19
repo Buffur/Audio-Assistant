@@ -16,6 +16,11 @@ ADMIN_MENU_LIMIT_EDIT_PREFIX = f"{ADMIN_MENU_PREFIX}limit_edit:"
 ADMIN_MENU_LIMIT_ADJUST_PREFIX = f"{ADMIN_MENU_PREFIX}limit_adjust:"
 ADMIN_MENU_LIMIT_RESET_PREFIX = f"{ADMIN_MENU_PREFIX}limit_reset:"
 ADMIN_MENU_USER_PREFIX = f"{ADMIN_MENU_PREFIX}user:"
+ADMIN_MENU_USER_ACTION_PREFIX = f"{ADMIN_MENU_PREFIX}user_action:"
+ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX = (
+    f"{ADMIN_MENU_PREFIX}user_action_confirm:"
+)
+ADMIN_MENU_USER_ACTION_CANCEL_PREFIX = f"{ADMIN_MENU_PREFIX}user_action_cancel:"
 ADMIN_MENU_USER_BAN_PREFIX = f"{ADMIN_MENU_PREFIX}user_ban:"
 ADMIN_MENU_USER_UNBAN_PREFIX = f"{ADMIN_MENU_PREFIX}user_unban:"
 ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX = f"{ADMIN_MENU_PREFIX}user_limit_plus_30:"
@@ -25,6 +30,20 @@ ADMIN_MENU_USER_LIMIT_PLUS_FOREVER_PREFIX = (
 ADMIN_MENU_USER_LIMIT_PLUS_REVOKE_PREFIX = (
     f"{ADMIN_MENU_PREFIX}user_limit_plus_revoke:"
 )
+
+ADMIN_USER_ACTION_BAN = "ban"
+ADMIN_USER_ACTION_UNBAN = "unban"
+ADMIN_USER_ACTION_LIMIT_PLUS_30 = "limit_plus_30"
+ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER = "limit_plus_forever"
+ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE = "limit_plus_revoke"
+
+ADMIN_USER_ACTIONS = {
+    ADMIN_USER_ACTION_BAN,
+    ADMIN_USER_ACTION_UNBAN,
+    ADMIN_USER_ACTION_LIMIT_PLUS_30,
+    ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
+    ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+}
 
 
 def admin_main_keyboard() -> InlineKeyboardMarkup:
@@ -200,7 +219,7 @@ def admin_limit_edit_keyboard(limit_name: str) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                text="↩️ Скинути до .env",
+                text="↩️ За замовчуванням",
                 callback_data=build_admin_limit_reset_callback(limit_name)
             )
         ],
@@ -221,6 +240,41 @@ def admin_limit_edit_keyboard(limit_name: str) -> InlineKeyboardMarkup:
 
 def build_admin_users_page_callback(page: int) -> str:
     return f"{ADMIN_MENU_USERS_PAGE_PREFIX}{max(page, 0)}"
+
+
+def build_admin_user_action_callback(
+    prefix: str,
+    action: str,
+    user_id: int,
+) -> str:
+    return f"{prefix}{action}:{user_id}"
+
+
+def parse_admin_user_action_callback(
+    callback_data: str | None,
+    prefix: str,
+) -> tuple[str, int] | None:
+    if not callback_data:
+        return None
+
+    if not callback_data.startswith(prefix):
+        return None
+
+    raw_value = callback_data.removeprefix(prefix)
+    parts = raw_value.rsplit(":", 1)
+
+    if len(parts) != 2:
+        return None
+
+    action, raw_user_id = parts
+
+    if action not in ADMIN_USER_ACTIONS:
+        return None
+
+    if not raw_user_id.isdigit():
+        return None
+
+    return action, int(raw_user_id)
 
 
 def parse_admin_users_page_callback(callback_data: str | None) -> int | None:
@@ -254,10 +308,16 @@ def admin_users_keyboard(
         user_id = user["user_id"]
         status_icon = "🚫" if user.get("is_banned") else "✅"
         plan_icon = "💎" if user.get("plan") == "premium" else "🎯"
+        username = str(user.get("username") or "").strip()
+        full_name = str(user.get("full_name") or "").strip()
+        display_name = username or full_name or str(user_id)
+
+        if len(display_name) > 18:
+            display_name = display_name[:17] + "..."
 
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{status_icon} {plan_icon} {user_id}",
+                text=f"{status_icon} {plan_icon} {display_name} · {user_id}",
                 callback_data=f"{ADMIN_MENU_USER_PREFIX}{user_id}"
             )
         ])
@@ -317,27 +377,43 @@ def admin_user_actions_keyboard(
             keyboard.append([
                 InlineKeyboardButton(
                     text="✅ Розблокувати",
-                    callback_data=f"{ADMIN_MENU_USER_UNBAN_PREFIX}{user_id}"
+                    callback_data=build_admin_user_action_callback(
+                        ADMIN_MENU_USER_ACTION_PREFIX,
+                        ADMIN_USER_ACTION_UNBAN,
+                        user_id,
+                    )
                 )
             ])
         else:
             keyboard.append([
                 InlineKeyboardButton(
                     text="🚫 Заблокувати",
-                    callback_data=f"{ADMIN_MENU_USER_BAN_PREFIX}{user_id}"
+                    callback_data=build_admin_user_action_callback(
+                        ADMIN_MENU_USER_ACTION_PREFIX,
+                        ADMIN_USER_ACTION_BAN,
+                        user_id,
+                    )
                 )
             ])
 
     keyboard.append([
         InlineKeyboardButton(
             text="💎 Ліміт+ 30 днів",
-            callback_data=f"{ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX}{user_id}"
+            callback_data=build_admin_user_action_callback(
+                ADMIN_MENU_USER_ACTION_PREFIX,
+                ADMIN_USER_ACTION_LIMIT_PLUS_30,
+                user_id,
+            )
         )
     ])
     keyboard.append([
         InlineKeyboardButton(
             text="♾️ Ліміт+ безстроково",
-            callback_data=f"{ADMIN_MENU_USER_LIMIT_PLUS_FOREVER_PREFIX}{user_id}"
+            callback_data=build_admin_user_action_callback(
+                ADMIN_MENU_USER_ACTION_PREFIX,
+                ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
+                user_id,
+            )
         )
     ])
 
@@ -345,7 +421,11 @@ def admin_user_actions_keyboard(
         keyboard.append([
             InlineKeyboardButton(
                 text="➖ Зняти Ліміт+",
-                callback_data=f"{ADMIN_MENU_USER_LIMIT_PLUS_REVOKE_PREFIX}{user_id}"
+                callback_data=build_admin_user_action_callback(
+                    ADMIN_MENU_USER_ACTION_PREFIX,
+                    ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+                    user_id,
+                )
             )
         ])
 
@@ -363,3 +443,31 @@ def admin_user_actions_keyboard(
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def admin_user_action_confirmation_keyboard(
+    action: str,
+    user_id: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Підтвердити",
+                callback_data=build_admin_user_action_callback(
+                    ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+                    action,
+                    user_id,
+                ),
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="↩️ Скасувати",
+                callback_data=build_admin_user_action_callback(
+                    ADMIN_MENU_USER_ACTION_CANCEL_PREFIX,
+                    action,
+                    user_id,
+                ),
+            )
+        ],
+    ])

@@ -27,6 +27,14 @@ from keyboards.admin_menu import (
     ADMIN_MENU_STATS_CALLBACK,
     ADMIN_MENU_USERS_CALLBACK,
     ADMIN_MENU_USERS_PAGE_PREFIX,
+    ADMIN_MENU_USER_ACTION_CANCEL_PREFIX,
+    ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+    ADMIN_MENU_USER_ACTION_PREFIX,
+    ADMIN_USER_ACTION_BAN,
+    ADMIN_USER_ACTION_LIMIT_PLUS_30,
+    ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
+    ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+    ADMIN_USER_ACTION_UNBAN,
     ADMIN_MENU_USER_BAN_PREFIX,
     ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX,
     ADMIN_MENU_USER_LIMIT_PLUS_FOREVER_PREFIX,
@@ -35,12 +43,14 @@ from keyboards.admin_menu import (
     ADMIN_MENU_USER_UNBAN_PREFIX,
     admin_limit_edit_keyboard,
     admin_limits_keyboard,
+    admin_user_action_confirmation_keyboard,
     admin_user_actions_keyboard,
     admin_users_keyboard,
     admin_back_keyboard,
     admin_main_keyboard,
     parse_admin_limit_adjust_callback,
     parse_admin_limit_name_callback,
+    parse_admin_user_action_callback,
     parse_admin_users_page_callback,
 )
 from services.usage_limits_service import (
@@ -61,6 +71,7 @@ from texts.admin_menu import (
     build_admin_limit_edit_text,
     build_admin_limits_text,
     build_admin_stats_text,
+    build_admin_user_action_confirm_text,
     build_admin_user_detail_text,
     build_admin_users_text,
 )
@@ -193,6 +204,69 @@ async def _show_admin_user_detail(
         )
     )
     return True
+
+
+async def _show_admin_user_action_confirmation(
+    callback: types.CallbackQuery,
+    action: str,
+    target_user_id: int,
+) -> bool:
+    if action == ADMIN_USER_ACTION_BAN and target_user_id in ADMIN_IDS:
+        await callback.answer("Адміністратора не можна заблокувати.", show_alert=True)
+        return False
+
+    user = await _get_admin_user(target_user_id)
+
+    if user is None:
+        await callback.answer("Користувача не знайдено.", show_alert=True)
+        return False
+
+    plan_info = await get_effective_plan_info(target_user_id)
+    user = {
+        **user,
+        "plan": plan_info["plan"],
+        "premium_until": plan_info["premium_until"],
+    }
+
+    await _safe_edit_admin_message(
+        callback=callback,
+        text=build_admin_user_action_confirm_text(action, user),
+        reply_markup=admin_user_action_confirmation_keyboard(
+            action=action,
+            user_id=target_user_id,
+        ),
+    )
+    return True
+
+
+async def _perform_admin_user_action(
+    action: str,
+    target_user_id: int,
+) -> str | None:
+    if action == ADMIN_USER_ACTION_BAN:
+        if target_user_id in ADMIN_IDS:
+            return "Адміністратора не можна заблокувати."
+
+        await ban_user(target_user_id)
+        return "Користувача заблоковано."
+
+    if action == ADMIN_USER_ACTION_UNBAN:
+        await unban_user(target_user_id)
+        return "Користувача розблоковано."
+
+    if action == ADMIN_USER_ACTION_LIMIT_PLUS_30:
+        await grant_premium(user_id=target_user_id, days=30)
+        return "Ліміт+ видано на 30 днів."
+
+    if action == ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER:
+        await grant_premium(user_id=target_user_id, days=None)
+        return "Ліміт+ видано безстроково."
+
+    if action == ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE:
+        await revoke_premium(user_id=target_user_id)
+        return "Ліміт+ знято."
+
+    return None
 
 
 async def _show_admin_limits(callback: types.CallbackQuery) -> None:
@@ -347,6 +421,88 @@ async def admin_user_detail_callback(callback: types.CallbackQuery) -> None:
         await callback.answer()
 
 
+@router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_PREFIX))
+async def admin_user_action_callback(callback: types.CallbackQuery) -> None:
+    admin_id = callback.from_user.id if callback.from_user else None
+
+    if not _is_admin_user(admin_id):
+        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+        return
+
+    parsed_value = parse_admin_user_action_callback(
+        callback.data,
+        ADMIN_MENU_USER_ACTION_PREFIX,
+    )
+
+    if parsed_value is None:
+        await callback.answer("Некоректна дія.", show_alert=True)
+        return
+
+    action, target_user_id = parsed_value
+
+    if await _show_admin_user_action_confirmation(
+        callback,
+        action,
+        target_user_id,
+    ):
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX))
+async def admin_user_action_confirm_callback(callback: types.CallbackQuery) -> None:
+    admin_id = callback.from_user.id if callback.from_user else None
+
+    if not _is_admin_user(admin_id):
+        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+        return
+
+    parsed_value = parse_admin_user_action_callback(
+        callback.data,
+        ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+    )
+
+    if parsed_value is None:
+        await callback.answer("Некоректна дія.", show_alert=True)
+        return
+
+    action, target_user_id = parsed_value
+    result_text = await _perform_admin_user_action(action, target_user_id)
+
+    if result_text is None:
+        await callback.answer("Некоректна дія.", show_alert=True)
+        return
+
+    if result_text.startswith("Адміністратора"):
+        await callback.answer(result_text, show_alert=True)
+        return
+
+    if await _show_admin_user_detail(callback, target_user_id):
+        await callback.answer(result_text)
+
+
+@router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_CANCEL_PREFIX))
+async def admin_user_action_cancel_callback(callback: types.CallbackQuery) -> None:
+    admin_id = callback.from_user.id if callback.from_user else None
+
+    if not _is_admin_user(admin_id):
+        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+        return
+
+    parsed_value = parse_admin_user_action_callback(
+        callback.data,
+        ADMIN_MENU_USER_ACTION_CANCEL_PREFIX,
+    )
+
+    if parsed_value is None:
+        await callback.answer("Некоректна дія.", show_alert=True)
+        return
+
+    _, target_user_id = parsed_value
+
+    if await _show_admin_user_detail(callback, target_user_id):
+        await callback.answer("Дію скасовано.")
+
+
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_BAN_PREFIX))
 async def admin_user_ban_callback(callback: types.CallbackQuery) -> None:
     admin_id = callback.from_user.id if callback.from_user else None
@@ -364,13 +520,12 @@ async def admin_user_ban_callback(callback: types.CallbackQuery) -> None:
         await callback.answer("Некоректний ID користувача.", show_alert=True)
         return
 
-    if target_user_id in ADMIN_IDS:
-        await callback.answer("Адміністратора не можна заблокувати.", show_alert=True)
-        return
-
-    await ban_user(target_user_id)
-    if await _show_admin_user_detail(callback, target_user_id):
-        await callback.answer("Користувача заблоковано.")
+    if await _show_admin_user_action_confirmation(
+        callback,
+        ADMIN_USER_ACTION_BAN,
+        target_user_id,
+    ):
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_UNBAN_PREFIX))
@@ -390,9 +545,12 @@ async def admin_user_unban_callback(callback: types.CallbackQuery) -> None:
         await callback.answer("Некоректний ID користувача.", show_alert=True)
         return
 
-    await unban_user(target_user_id)
-    if await _show_admin_user_detail(callback, target_user_id):
-        await callback.answer("Користувача розблоковано.")
+    if await _show_admin_user_action_confirmation(
+        callback,
+        ADMIN_USER_ACTION_UNBAN,
+        target_user_id,
+    ):
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX))
@@ -412,9 +570,12 @@ async def admin_user_limit_plus_30_callback(callback: types.CallbackQuery) -> No
         await callback.answer("Некоректний ID користувача.", show_alert=True)
         return
 
-    await grant_premium(user_id=target_user_id, days=30)
-    if await _show_admin_user_detail(callback, target_user_id):
-        await callback.answer("Ліміт+ видано на 30 днів.")
+    if await _show_admin_user_action_confirmation(
+        callback,
+        ADMIN_USER_ACTION_LIMIT_PLUS_30,
+        target_user_id,
+    ):
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_LIMIT_PLUS_FOREVER_PREFIX))
@@ -436,9 +597,12 @@ async def admin_user_limit_plus_forever_callback(
         await callback.answer("Некоректний ID користувача.", show_alert=True)
         return
 
-    await grant_premium(user_id=target_user_id, days=None)
-    if await _show_admin_user_detail(callback, target_user_id):
-        await callback.answer("Ліміт+ видано безстроково.")
+    if await _show_admin_user_action_confirmation(
+        callback,
+        ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
+        target_user_id,
+    ):
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_LIMIT_PLUS_REVOKE_PREFIX))
@@ -460,9 +624,12 @@ async def admin_user_limit_plus_revoke_callback(
         await callback.answer("Некоректний ID користувача.", show_alert=True)
         return
 
-    await revoke_premium(user_id=target_user_id)
-    if await _show_admin_user_detail(callback, target_user_id):
-        await callback.answer("Ліміт+ знято.")
+    if await _show_admin_user_action_confirmation(
+        callback,
+        ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+        target_user_id,
+    ):
+        await callback.answer()
 
 
 @router.callback_query(F.data == ADMIN_MENU_PREMIUM_CALLBACK)

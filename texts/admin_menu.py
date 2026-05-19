@@ -60,6 +60,14 @@ ADMIN_LIMIT_ICONS = {
     "summaries_limit": "📝",
 }
 
+ADMIN_USER_ACTION_LABELS = {
+    "ban": "заблокувати користувача",
+    "unban": "розблокувати користувача",
+    "limit_plus_30": "видати Ліміт+ на 30 днів",
+    "limit_plus_forever": "видати Ліміт+ безстроково",
+    "limit_plus_revoke": "зняти Ліміт+",
+}
+
 
 def build_admin_limits_text(limits: dict[str, int]) -> str:
     return (
@@ -85,7 +93,7 @@ def build_admin_limit_edit_text(
     return (
         f"{icon} <b>{label}</b>\n\n"
         f"Поточне значення: <b>{current_value}</b> / день\n"
-        f"Значення з .env: <b>{default_value}</b> / день\n\n"
+        f"Значення за замовчуванням: <b>{default_value}</b> / день\n\n"
         "Змініть значення кнопками нижче."
     )
 
@@ -237,4 +245,18 @@ def build_admin_user_detail_text(user: dict) -> str:
         f"Статус: {status}\n"
         f"Тариф: {plan_line}\n"
         f"Активність: {last_activity}"
+    )
+
+
+def build_admin_user_action_confirm_text(action: str, user: dict) -> str:
+    action_label = ADMIN_USER_ACTION_LABELS.get(action, action)
+    username = html.escape(str(user.get("username") or "N/A"))
+    full_name = html.escape(str(user.get("full_name") or "N/A"))
+
+    return (
+        "⚠️ <b>Підтвердження дії</b>\n\n"
+        f"Дія: <b>{html.escape(action_label)}</b>\n"
+        f"Користувач: <b>{full_name}</b> ({username})\n"
+        f"ID: <code>{user['user_id']}</code>\n\n"
+        "Підтвердьте дію кнопкою нижче."
     )

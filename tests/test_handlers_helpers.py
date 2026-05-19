@@ -187,8 +187,8 @@ def test_settings_keyboard_does_not_show_tts_provider_choice() -> None:
         for button in row
     ]
 
-    assert settings_keyboard.TTS_PROVIDER_EDGE_CALLBACK not in callbacks
-    assert settings_keyboard.TTS_PROVIDER_PIPER_CALLBACK not in callbacks
+    assert all(not callback.startswith("tts_provider:") for callback in callbacks)
+    assert settings_keyboard.SETTINGS_PREVIEW_CALLBACK in callbacks
 
 
 def test_admin_menu_parses_user_callback_id() -> None:
@@ -235,6 +235,66 @@ def test_admin_menu_parses_limit_callbacks() -> None:
     ) is None
 
 
+def test_admin_menu_parses_user_action_callbacks() -> None:
+    callback_data = admin_menu_keyboard.build_admin_user_action_callback(
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+        admin_menu_keyboard.ADMIN_USER_ACTION_BAN,
+        123,
+    )
+
+    assert admin_menu_keyboard.parse_admin_user_action_callback(
+        callback_data,
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+    ) == (admin_menu_keyboard.ADMIN_USER_ACTION_BAN, 123)
+    assert admin_menu_keyboard.parse_admin_user_action_callback(
+        "admin_menu:user_action_confirm:unknown:123",
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+    ) is None
+    assert admin_menu_keyboard.parse_admin_user_action_callback(
+        "admin_menu:user_action_confirm:ban:nope",
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
+    ) is None
+
+
+def test_admin_user_action_buttons_use_confirmation_flow() -> None:
+    keyboard = admin_menu_keyboard.admin_user_actions_keyboard(
+        user_id=123,
+        is_banned=False,
+        is_limit_plus=True,
+    )
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+
+    assert any(
+        callback.startswith(admin_menu_keyboard.ADMIN_MENU_USER_ACTION_PREFIX)
+        for callback in callbacks
+    )
+    assert all(
+        not callback.startswith(admin_menu_keyboard.ADMIN_MENU_USER_BAN_PREFIX)
+        for callback in callbacks
+    )
+
+    confirm_keyboard = admin_menu_keyboard.admin_user_action_confirmation_keyboard(
+        admin_menu_keyboard.ADMIN_USER_ACTION_BAN,
+        123,
+    )
+    confirm_callbacks = [
+        button.callback_data
+        for row in confirm_keyboard.inline_keyboard
+        for button in row
+    ]
+
+    assert confirm_callbacks[0].startswith(
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX
+    )
+    assert confirm_callbacks[1].startswith(
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CANCEL_PREFIX
+    )
+
+
 def test_admin_user_detail_text_escapes_user_content() -> None:
     text = admin_menu_texts.build_admin_user_detail_text({
         "user_id": 1,
@@ -249,6 +309,21 @@ def test_admin_user_detail_text_escapes_user_content() -> None:
     assert "&lt;username&gt;" in text
     assert "&lt;full&gt;" in text
     assert "&lt;date&gt;" in text
+    assert "<username>" not in text
+
+
+def test_admin_user_action_confirm_text_escapes_user_content() -> None:
+    text = admin_menu_texts.build_admin_user_action_confirm_text(
+        admin_menu_keyboard.ADMIN_USER_ACTION_BAN,
+        {
+            "user_id": 1,
+            "username": "<username>",
+            "full_name": "<full>",
+        },
+    )
+
+    assert "&lt;username&gt;" in text
+    assert "&lt;full&gt;" in text
     assert "<username>" not in text
 
 

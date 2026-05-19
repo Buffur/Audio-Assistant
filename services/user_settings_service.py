@@ -14,10 +14,10 @@ from services.usage_limits_service import is_premium_user
 logger = logging.getLogger(__name__)
 
 SPEED_DISPLAY = {
-    "-25%": "-0.25",
-    "+0%": "1",
-    "+25%": "+0.25",
-    "+50%": "+0.5",
+    "-25%": "0.75x",
+    "+0%": "1x",
+    "+25%": "1.25x",
+    "+50%": "1.5x",
 }
 
 ALLOWED_SPEEDS = set(SPEED_DISPLAY.keys())

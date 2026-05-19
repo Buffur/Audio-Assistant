@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 VOICE_CALLBACK_PREFIX = "voice:"
 SPEED_CALLBACK_PREFIX = "speed:"
-TTS_PROVIDER_CALLBACK_PREFIX = "tts_provider:"
+SETTINGS_PREVIEW_CALLBACK = "settings:preview"
 
 VOICE_FEMALE_CALLBACK = f"{VOICE_CALLBACK_PREFIX}female"
 VOICE_MALE_CALLBACK = f"{VOICE_CALLBACK_PREFIX}male"
@@ -13,9 +13,6 @@ SPEED_MINUS_25_CALLBACK = f"{SPEED_CALLBACK_PREFIX}-25%"
 SPEED_NORMAL_CALLBACK = f"{SPEED_CALLBACK_PREFIX}+0%"
 SPEED_PLUS_25_CALLBACK = f"{SPEED_CALLBACK_PREFIX}+25%"
 SPEED_PLUS_50_CALLBACK = f"{SPEED_CALLBACK_PREFIX}+50%"
-
-TTS_PROVIDER_PIPER_CALLBACK = f"{TTS_PROVIDER_CALLBACK_PREFIX}piper"
-TTS_PROVIDER_EDGE_CALLBACK = f"{TTS_PROVIDER_CALLBACK_PREFIX}edge"
 
 
 def settings_keyboard() -> InlineKeyboardMarkup:
@@ -35,22 +32,28 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                text="🐢 -0.25",
+                text="🐢 0.75x",
                 callback_data=SPEED_MINUS_25_CALLBACK
             ),
             InlineKeyboardButton(
-                text="⚡ 1 (Нормальна)",
+                text="⚡ 1x",
                 callback_data=SPEED_NORMAL_CALLBACK
             ),
         ],
         [
             InlineKeyboardButton(
-                text="🚀 +0.25",
+                text="🚀 1.25x",
                 callback_data=SPEED_PLUS_25_CALLBACK
             ),
             InlineKeyboardButton(
-                text="🚀 +0.5",
+                text="🚀 1.5x",
                 callback_data=SPEED_PLUS_50_CALLBACK
             ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="▶️ Приклад",
+                callback_data=SETTINGS_PREVIEW_CALLBACK,
+            )
         ],
     ])
