@@ -10,6 +10,11 @@ def test_normalize_ocr_text_trims_lines_and_spaces() -> None:
     )
 
 
+def test_ocr_prompt_preserves_detected_language() -> None:
+    assert "Автоматично визнач мову" in ocr.OCR_PROMPT
+    assert "Не перекладай" in ocr.OCR_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_extract_text_with_providers_uses_gemini(monkeypatch) -> None:
     image = Image.new("RGB", (10, 10), "white")

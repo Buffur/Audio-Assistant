@@ -154,7 +154,9 @@ EXPORT_AUDIO_CROSSFADE_MS=120
 
 ### Privacy і retention
 
-Бот має короткий privacy-текст у команді `/privacy` і команду `/delete_my_data`.
+Бот має короткий privacy-текст у команді `/privacy`, окреме очищення каталогу
+через `/catalog_clear` і повніше очищення приватних даних через `/delete_my_data`.
+Обидві destructive-команди запитують підтвердження.
 
 `/delete_my_data` очищає:
 
@@ -279,6 +281,7 @@ PostgreSQL має сенс додавати, якщо з'явиться хоча
 BOT_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_gemini_api_key
 ADMIN_IDS=123456789
+HIDE_USER_COMMANDS=1
 
 AI_PROVIDER_CHAIN=gemini
 GEMINI_TEXT_MODEL=gemini-3.1-flash-lite

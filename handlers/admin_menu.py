@@ -34,6 +34,7 @@ from keyboards.admin_menu import (
     ADMIN_USER_ACTION_LIMIT_PLUS_30,
     ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
     ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+    ADMIN_USER_ACTION_RESET_LIMITS,
     ADMIN_USER_ACTION_UNBAN,
     ADMIN_MENU_USER_BAN_PREFIX,
     ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX,
@@ -61,6 +62,7 @@ from services.usage_limits_service import (
     grant_premium,
     revoke_premium,
     reset_editable_limit,
+    reset_user_daily_limits,
 )
 from texts.admin_menu import (
     ADMIN_ACCESS_DENIED_TEXT,
@@ -265,6 +267,10 @@ async def _perform_admin_user_action(
     if action == ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE:
         await revoke_premium(user_id=target_user_id)
         return "Ліміт+ знято."
+
+    if action == ADMIN_USER_ACTION_RESET_LIMITS:
+        await reset_user_daily_limits(user_id=target_user_id)
+        return "Денні ліміти користувача обнулено."
 
     return None
 

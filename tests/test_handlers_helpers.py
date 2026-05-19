@@ -8,11 +8,13 @@ from handlers import premium_admin
 from handlers import reading_callbacks
 from keyboards import admin_menu as admin_menu_keyboard
 from keyboards import catalog as catalog_keyboard
+from keyboards import privacy as privacy_keyboard
 from keyboards import reading as reading_keyboard
 from keyboards import settings as settings_keyboard
 from texts import admin_menu as admin_menu_texts
 from texts import catalog as catalog_texts
 from texts import messages as message_texts
+from texts import privacy as privacy_texts
 
 
 def _message(text: str | None = None, user_id: int | None = None):
@@ -255,6 +257,16 @@ def test_admin_menu_parses_user_action_callbacks() -> None:
         admin_menu_keyboard.ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX,
     ) is None
 
+    reset_callback = admin_menu_keyboard.build_admin_user_action_callback(
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_PREFIX,
+        admin_menu_keyboard.ADMIN_USER_ACTION_RESET_LIMITS,
+        456,
+    )
+    assert admin_menu_keyboard.parse_admin_user_action_callback(
+        reset_callback,
+        admin_menu_keyboard.ADMIN_MENU_USER_ACTION_PREFIX,
+    ) == (admin_menu_keyboard.ADMIN_USER_ACTION_RESET_LIMITS, 456)
+
 
 def test_admin_user_action_buttons_use_confirmation_flow() -> None:
     keyboard = admin_menu_keyboard.admin_user_actions_keyboard(
@@ -274,6 +286,12 @@ def test_admin_user_action_buttons_use_confirmation_flow() -> None:
     )
     assert all(
         not callback.startswith(admin_menu_keyboard.ADMIN_MENU_USER_BAN_PREFIX)
+        for callback in callbacks
+    )
+    assert any(
+        callback.endswith(
+            f"{admin_menu_keyboard.ADMIN_USER_ACTION_RESET_LIMITS}:123"
+        )
         for callback in callbacks
     )
 
@@ -385,6 +403,20 @@ def test_catalog_page_callbacks_and_text() -> None:
 
     assert "Сторінка 2 з 3" in text
     assert "6. <b>Текст</b>" in text
+
+
+def test_delete_my_data_confirmation_keyboard_and_text() -> None:
+    keyboard = privacy_keyboard.delete_my_data_confirmation_keyboard()
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+
+    assert privacy_keyboard.DELETE_MY_DATA_CONFIRM_CALLBACK in callbacks
+    assert privacy_keyboard.DELETE_MY_DATA_CANCEL_CALLBACK in callbacks
+    assert "Підтвердьте очищення даних" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
+    assert "історію документів" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
 
 
 def test_catalog_reading_session_restores_cached_summary() -> None:

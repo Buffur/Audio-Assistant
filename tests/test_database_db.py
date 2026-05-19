@@ -60,6 +60,30 @@ async def test_usage_increment_under_limit_is_atomic(workspace_tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_reset_daily_usage_deletes_only_selected_day(workspace_tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "reset_usage.sqlite"))
+
+    await db_module.init_db()
+    await db_module.increment_daily_usage(1, "2026-05-19", "text_messages_processed", 2)
+    await db_module.increment_daily_usage(1, "2026-05-18", "files_processed", 1)
+
+    assert await db_module.reset_daily_usage(1, "2026-05-19") is True
+    assert await db_module.reset_daily_usage(1, "2026-05-19") is False
+
+    today_usage = await db_module.get_daily_usage(1, "2026-05-19")
+    previous_usage = await db_module.get_daily_usage(1, "2026-05-18")
+
+    assert today_usage == {
+        "text_messages_processed": 0,
+        "files_processed": 0,
+        "ocr_processed": 0,
+        "links_processed": 0,
+        "summaries_generated": 0,
+    }
+    assert previous_usage["files_processed"] == 1
+
+
+@pytest.mark.asyncio
 async def test_admin_stats_snapshot_uses_aggregated_usage(workspace_tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "admin.sqlite"))
 

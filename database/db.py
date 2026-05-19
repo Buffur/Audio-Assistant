@@ -624,6 +624,23 @@ async def increment_daily_usage(
         await db.commit()
 
 
+async def reset_daily_usage(
+    user_id: int,
+    usage_date: str,
+) -> bool:
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM usage_daily
+            WHERE user_id = ? AND usage_date = ?
+            """,
+            (user_id, usage_date),
+        )
+        await db.commit()
+
+    return bool(cursor.rowcount)
+
+
 async def try_increment_daily_usage_under_limit(
     user_id: int,
     usage_date: str,

@@ -9,7 +9,14 @@ from typing import Any
 
 from aiogram import Bot, Dispatcher  # type: ignore
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+)
 
 from config import (
     ADMIN_IDS,
@@ -18,6 +25,8 @@ from config import (
     API_PORT,
     BOT_RUNTIME_MODE,
     BOT_TOKEN,
+    CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP,
+    HIDE_USER_COMMANDS,
     LOG_FORMAT,
     LOG_LEVEL,
     LOG_SERVICE_NAME,
@@ -29,7 +38,7 @@ from config import (
     TELEGRAM_WEBHOOK_SECRET_TOKEN,
     TELEGRAM_WEBHOOK_URL,
 )
-from database.db import init_db
+from database.db import get_all_users, init_db
 from services.logging_config import setup_logging
 
 # ============================================================
@@ -414,20 +423,22 @@ def setup_middlewares(dp: Dispatcher) -> None:
 # ============================================================
 
 COMMAND_SETUP_TIMEOUT_SECONDS = 10
+COMMAND_LANGUAGE_CODES_TO_CLEAR = ("uk", "ru", "en")
 
 MINIMAL_USER_COMMANDS = [
     BotCommand(command="start", description="Почати роботу"),
     BotCommand(command="help", description="Показати довідку"),
     BotCommand(command="settings", description="Налаштувати голос і швидкість"),
+    BotCommand(command="catalog", description="Каталог документів"),
+    BotCommand(command="catalog_clear", description="Очистити каталог"),
+    BotCommand(command="usage", description="Показати статистику використання"),
+    BotCommand(command="privacy", description="Показати політику конфіденційності"),
+    BotCommand(command="delete_my_data", description="Очищає вашу історію документів"),
 ]
 
 USER_COMMANDS = [
     *MINIMAL_USER_COMMANDS,
-    BotCommand(command="usage", description="Перевірити денні ліміти"),
-    BotCommand(command="catalog", description="Відкрити історію документів"),
     BotCommand(command="history", description="Показати історію документів"),
-    BotCommand(command="privacy", description="Privacy і збереження даних"),
-    BotCommand(command="delete_my_data", description="Очистити мої дані"),
 ]
 
 MINIMAL_ADMIN_COMMANDS = [
@@ -469,11 +480,13 @@ async def _try_set_bot_commands(
     commands: list[BotCommand],
     scope: BotCommandScopeDefault | BotCommandScopeChat,
     log_label: str,
+    language_code: str | None = None,
 ) -> Exception | None:
     try:
         await bot.set_my_commands(
             commands,
             scope=scope,
+            language_code=language_code,
             request_timeout=COMMAND_SETUP_TIMEOUT_SECONDS,
         )
     except TelegramAPIError as error:
@@ -496,15 +509,153 @@ async def _try_set_bot_commands(
     return None
 
 
-async def setup_bot_commands(bot: Bot) -> None:
-    user_error = await _try_set_bot_commands(
-        bot,
-        USER_COMMANDS,
-        BotCommandScopeDefault(),
-        "команди бота для користувачів",
-    )
+async def _set_commands_for_scope(
+    bot: Bot,
+    commands: list[BotCommand],
+    scope: BotCommandScopeDefault | BotCommandScopeChat,
+    log_label: str,
+) -> Exception | None:
+    first_error = None
 
-    if _should_retry_with_minimal_commands(user_error):
+    for language_code in _command_language_codes_to_clear():
+        error = await _try_set_bot_commands(
+            bot,
+            commands,
+            scope,
+            _command_log_label(log_label, language_code),
+            language_code=language_code,
+        )
+
+        first_error = first_error or error
+
+    return first_error
+
+
+async def _try_delete_bot_commands(
+    bot: Bot,
+    scope: Any,
+    log_label: str,
+    language_code: str | None = None,
+) -> Exception | None:
+    try:
+        await bot.delete_my_commands(
+            scope=scope,
+            language_code=language_code,
+            request_timeout=COMMAND_SETUP_TIMEOUT_SECONDS,
+        )
+    except TelegramAPIError as error:
+        logger.warning(
+            "Не вдалося очистити %s: %s",
+            log_label,
+            _format_command_setup_error(error),
+        )
+        return error
+    except Exception as error:
+        logger.warning(
+            "Не вдалося очистити %s: %s",
+            log_label,
+            _format_command_setup_error(error),
+            exc_info=True,
+        )
+        return error
+
+    logger.info("%s очищено.", log_label)
+    return None
+
+
+def _command_language_codes_to_clear() -> list[str | None]:
+    return [None, *COMMAND_LANGUAGE_CODES_TO_CLEAR]
+
+
+def _command_log_label(log_label: str, language_code: str | None) -> str:
+    if language_code is None:
+        return log_label
+
+    return f"{log_label} language={language_code}"
+
+
+async def _clear_commands_for_scope(
+    bot: Bot,
+    scope: Any,
+    log_label: str,
+) -> None:
+    for language_code in _command_language_codes_to_clear():
+        await _try_delete_bot_commands(
+            bot,
+            scope,
+            _command_log_label(log_label, language_code),
+            language_code=language_code,
+        )
+
+
+async def _clear_known_regular_user_commands(bot: Bot) -> None:
+    try:
+        user_ids = await get_all_users()
+    except Exception as error:
+        logger.warning(
+            "Не вдалося прочитати користувачів для очищення chat-scoped команд: %s",
+            _format_command_setup_error(error),
+            exc_info=True,
+        )
+        return
+
+    regular_user_ids = [
+        user_id for user_id in user_ids
+        if user_id not in ADMIN_IDS
+    ]
+
+    for user_id in regular_user_ids:
+        await _clear_commands_for_scope(
+            bot,
+            BotCommandScopeChat(chat_id=user_id),
+            f"chat-команди бота для user_id={user_id}",
+        )
+
+    if regular_user_ids:
+        logger.info(
+            "Очищено chat-scoped команди для %s звичайних користувачів.",
+            len(regular_user_ids),
+        )
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    user_error = None
+
+    if HIDE_USER_COMMANDS:
+        user_error = await _set_commands_for_scope(
+            bot,
+            MINIMAL_USER_COMMANDS,
+            BotCommandScopeDefault(),
+            "мінімальні команди бота для користувачів",
+        )
+
+        command_scopes_to_clear = [
+            ("команди бота в приватних чатах", BotCommandScopeAllPrivateChats()),
+            ("команди бота в групах", BotCommandScopeAllGroupChats()),
+            (
+                "команди бота для адміністраторів чатів",
+                BotCommandScopeAllChatAdministrators(),
+            ),
+        ]
+
+        for log_label, scope in command_scopes_to_clear:
+            await _clear_commands_for_scope(
+                bot,
+                scope,
+                log_label,
+            )
+
+        if CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP:
+            await _clear_known_regular_user_commands(bot)
+    else:
+        user_error = await _try_set_bot_commands(
+            bot,
+            USER_COMMANDS,
+            BotCommandScopeDefault(),
+            "команди бота для користувачів",
+        )
+
+    if not HIDE_USER_COMMANDS and _should_retry_with_minimal_commands(user_error):
         logger.warning(
             "Telegram відхилив повний список користувацьких команд. "
             "Пробую мінімальний набір."

@@ -17,6 +17,7 @@ from database.db import (
     get_daily_usage,
     get_user_plan_info,
     increment_daily_usage,
+    reset_daily_usage,
     revoke_user_premium,
     set_app_setting,
     set_user_premium,
@@ -265,6 +266,13 @@ async def get_user_usage_status(user_id: int) -> dict:
         **plan_info,
         **limits,
     }
+
+
+async def reset_user_daily_limits(user_id: int) -> bool:
+    return await reset_daily_usage(
+        user_id=user_id,
+        usage_date=_today_key(),
+    )
 
 
 def _is_under_limit(current_value: int, limit: int | None) -> bool:

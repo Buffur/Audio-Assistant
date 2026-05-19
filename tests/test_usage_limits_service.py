@@ -114,3 +114,21 @@ async def test_reserve_input_processing_records_premium_usage(monkeypatch) -> No
 
     assert await service.reserve_input_processing(1, service.USAGE_TYPE_OCR) is True
     assert captured["field_name"] == service.USAGE_FIELD_OCR
+
+
+@pytest.mark.asyncio
+async def test_reset_user_daily_limits_uses_today_key(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_reset_daily_usage(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(service, "_today_key", lambda: "2026-05-19")
+    monkeypatch.setattr(service, "reset_daily_usage", fake_reset_daily_usage)
+
+    assert await service.reset_user_daily_limits(123) is True
+    assert captured == {
+        "user_id": 123,
+        "usage_date": "2026-05-19",
+    }

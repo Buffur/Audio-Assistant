@@ -235,6 +235,24 @@ async def test_parser_ai_provider_chain_falls_back_to_gemini(monkeypatch) -> Non
     }
 
 
+@pytest.mark.asyncio
+async def test_summary_prompt_asks_ai_to_keep_input_language(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_generate_ai_text(prompt, temperature):
+        captured["prompt"] = prompt
+        captured["temperature"] = temperature
+        return "summary"
+
+    monkeypatch.setattr(parser, "_generate_ai_text", fake_generate_ai_text)
+
+    result = await parser.summarize_text_with_ai("English source text. " * 10)
+
+    assert result == "summary"
+    assert "Автоматично визнач мову" in captured["prompt"]
+    assert "відповідай тією самою мовою" in captured["prompt"]
+
+
 def test_parser_content_type_helper() -> None:
     assert parser._is_supported_content_type("text/html; charset=utf-8") is True
     assert parser._is_supported_content_type("application/json") is False

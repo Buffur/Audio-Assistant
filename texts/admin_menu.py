@@ -66,6 +66,7 @@ ADMIN_USER_ACTION_LABELS = {
     "limit_plus_30": "видати Ліміт+ на 30 днів",
     "limit_plus_forever": "видати Ліміт+ безстроково",
     "limit_plus_revoke": "зняти Ліміт+",
+    "reset_limits": "обнулити денні ліміти",
 }
 
 

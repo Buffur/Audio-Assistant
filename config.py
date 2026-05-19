@@ -69,7 +69,8 @@ class Settings(BaseSettings):
     GEMINI_TTS_FEMALE_VOICE: str = "Kore"
     GEMINI_TTS_MALE_VOICE: str = "Charon"
     GEMINI_TTS_STYLE_PROMPT: str = (
-        "Read this Ukrainian text clearly and naturally. "
+        "Detect the language of the input text automatically and read it clearly "
+        "and naturally in the same language. "
         "Keep a calm, friendly pace and a consistent neutral newsroom tone. "
         "Treat every chunk as part of one continuous article."
     )
@@ -85,6 +86,8 @@ class Settings(BaseSettings):
     PIPER_TIMEOUT_SECONDS: int = 60
 
     ADMIN_IDS: Annotated[list[int], NoDecode] = Field(default_factory=list)
+    HIDE_USER_COMMANDS: bool = True
+    CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP: bool = False
 
     DB_PATH: str = "bot_database.sqlite"
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -536,6 +539,10 @@ PIPER_LENGTH_SCALE = settings.PIPER_LENGTH_SCALE
 PIPER_TIMEOUT_SECONDS = settings.PIPER_TIMEOUT_SECONDS
 
 ADMIN_IDS = settings.ADMIN_IDS
+HIDE_USER_COMMANDS = settings.HIDE_USER_COMMANDS
+CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP = (
+    settings.CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP
+)
 
 DB_PATH = settings.DB_PATH
 REDIS_URL = settings.REDIS_URL

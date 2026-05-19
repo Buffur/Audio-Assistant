@@ -36,6 +36,7 @@ ADMIN_USER_ACTION_UNBAN = "unban"
 ADMIN_USER_ACTION_LIMIT_PLUS_30 = "limit_plus_30"
 ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER = "limit_plus_forever"
 ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE = "limit_plus_revoke"
+ADMIN_USER_ACTION_RESET_LIMITS = "reset_limits"
 
 ADMIN_USER_ACTIONS = {
     ADMIN_USER_ACTION_BAN,
@@ -43,6 +44,7 @@ ADMIN_USER_ACTIONS = {
     ADMIN_USER_ACTION_LIMIT_PLUS_30,
     ADMIN_USER_ACTION_LIMIT_PLUS_FOREVER,
     ADMIN_USER_ACTION_LIMIT_PLUS_REVOKE,
+    ADMIN_USER_ACTION_RESET_LIMITS,
 }
 
 
@@ -428,6 +430,17 @@ def admin_user_actions_keyboard(
                 )
             )
         ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="🔄 Обнулити ліміти за сьогодні",
+            callback_data=build_admin_user_action_callback(
+                ADMIN_MENU_USER_ACTION_PREFIX,
+                ADMIN_USER_ACTION_RESET_LIMITS,
+                user_id,
+            )
+        )
+    ])
 
     keyboard.append([
         InlineKeyboardButton(

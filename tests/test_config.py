@@ -104,6 +104,24 @@ def test_api_and_webhook_settings_are_validated() -> None:
     assert settings.TELEGRAM_WEBHOOK_PATH == "/telegram"
 
 
+def test_user_commands_are_hidden_by_default_but_configurable() -> None:
+    default_settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+    )
+    visible_settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+        HIDE_USER_COMMANDS=False,
+    )
+
+    assert default_settings.HIDE_USER_COMMANDS is True
+    assert visible_settings.HIDE_USER_COMMANDS is False
+    assert default_settings.CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP is False
+
+
 def test_api_and_webhook_settings_reject_invalid_values() -> None:
     with pytest.raises(ValueError):
         Settings(
