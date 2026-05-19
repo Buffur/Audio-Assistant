@@ -305,3 +305,73 @@ async def test_send_audio_chunk_hides_summary_after_summary_generated(
     assert message.answers == [reading_service.ALL_PARTS_SENT_AFTER_SUMMARY_TEXT]
     assert session["index"] == 1
     assert session["is_generating"] is False
+
+
+@pytest.mark.asyncio
+async def test_send_audio_chunk_keeps_summary_button_for_cached_catalog_summary(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    async def fake_get_effective_user_settings(user_id: int):
+        return "uk-UA-PolinaNeural", "+0%"
+
+    async def fake_get_effective_user_tts_provider(user_id: int) -> str:
+        return "edge"
+
+    async def fake_is_premium_user(user_id: int) -> bool:
+        return False
+
+    async def fake_get_audio_from_prefetch_or_generate(**kwargs):
+        return ["chunk.ogg"]
+
+    async def fake_send_audio_files(**kwargs) -> None:
+        captured["reply_markup"] = kwargs["reply_markup"]
+
+    monkeypatch.setattr(
+        reading_service,
+        "get_effective_user_settings",
+        fake_get_effective_user_settings,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "get_effective_user_tts_provider",
+        fake_get_effective_user_tts_provider,
+    )
+    monkeypatch.setattr(reading_service, "is_premium_user", fake_is_premium_user)
+    monkeypatch.setattr(
+        reading_service,
+        "_get_audio_from_prefetch_or_generate",
+        fake_get_audio_from_prefetch_or_generate,
+    )
+    monkeypatch.setattr(reading_service, "_send_audio_files", fake_send_audio_files)
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "catalog-session",
+            "chunks": ["one"],
+            "index": 0,
+            "is_generating": True,
+            "summary_text": "cached summary from catalog",
+            "summary_delivered": False,
+        },
+    )
+
+    message = FakeMessage()
+
+    await reading_service._send_audio_chunk_now(
+        message=message,
+        user_id=1,
+        expected_session_id="catalog-session",
+        status_msg=None,
+    )
+
+    callbacks = [
+        button.callback_data
+        for row in captured["reply_markup"].inline_keyboard
+        for button in row
+    ]
+
+    assert any(callback.startswith(READ_SUMMARY_ACTION) for callback in callbacks)
+    assert message.answers == [reading_service.ALL_PARTS_SENT_TEXT]

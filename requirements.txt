@@ -3,9 +3,11 @@
 # Telegram bot framework
 aiogram
 
-# Async database and HTTP
+# Async database and HTTP/API
 aiosqlite
 aiohttp
+fastapi
+uvicorn[standard]
 
 # HTML parsing
 beautifulsoup4

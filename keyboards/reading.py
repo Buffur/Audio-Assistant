@@ -169,17 +169,6 @@ def summary_navigation_keyboard(
     """
     keyboard = []
 
-    if can_export_audio:
-        keyboard.append([
-            InlineKeyboardButton(
-                text="🎧 Зібрати в один файл",
-                callback_data=build_reading_callback(
-                    READ_EXPORT_AUDIO_ACTION,
-                    session_id
-                )
-            )
-        ])
-
     if has_next:
         keyboard.append([
             InlineKeyboardButton(

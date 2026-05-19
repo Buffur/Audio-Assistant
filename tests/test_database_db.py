@@ -111,10 +111,25 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     assert len(history) == 1
     assert history[0]["id"] == document_id
     assert history[0]["has_chunks"] is True
+    assert history[0]["has_summary"] is False
 
     document = await db_module.get_user_document_by_id(1, document_id)
     assert document is not None
     assert document["chunks_json"] == '["one", "two"]'
+    assert document["summary_text"] is None
+
+    assert await db_module.set_document_summary(
+        user_id=1,
+        document_id=document_id,
+        summary_text="Summary",
+    ) is True
+
+    document_with_summary = await db_module.get_user_document_by_id(1, document_id)
+    assert document_with_summary["summary_text"] == "Summary"
+    assert document_with_summary["summary_generated_at"] is not None
+
+    history_with_summary = await db_module.get_user_document_history(1)
+    assert history_with_summary[0]["has_summary"] is True
 
     await db_module.delete_user_document(1, document_id)
     assert await db_module.get_user_document_by_id(1, document_id) is None

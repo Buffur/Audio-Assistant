@@ -190,22 +190,27 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         )
         return
 
-    await save_document_history_from_message(
+    document_id = await save_document_history_from_message(
         user_id=user_id,
         message=message,
         text=text,
         chunks=chunks,
     )
 
+    session = {
+        "session_id": _generate_session_id(),
+        "chunks": chunks,
+        "index": 0,
+        "is_generating": True,
+        "prefetch_task": None,
+    }
+
+    if document_id is not None:
+        session["catalog_document_id"] = document_id
+
     await set_reading_session(
         user_id=user_id,
-        session={
-            "session_id": _generate_session_id(),
-            "chunks": chunks,
-            "index": 0,
-            "is_generating": True,
-            "prefetch_task": None,
-        },
+        session=session,
     )
 
     if len(chunks) > 1:

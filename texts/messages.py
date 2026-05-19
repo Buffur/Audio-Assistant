@@ -44,14 +44,12 @@ SUMMARY_AUDIO_GENERATION_ERROR = "❌ Не вдалося згенерувати
 SUMMARY_GENERATION_ERROR = "❌ Сталася помилка генерації."
 SUMMARY_CAPTION_TEXT = "📝 Короткий зміст від ШІ"
 SUMMARY_ALREADY_READY_TEXT = (
-    "ℹ️ Короткий зміст файлу вже створено. "
-    "Показую збережений варіант без повторного списання ліміту."
+    "Короткий зміст уже готовий."
 )
 SUMMARY_ALREADY_SENT_TEXT = (
-    "ℹ️ Короткий зміст файлу вже створено вище. "
-    "Повторно не запускаю ШІ і не списую ліміт."
+    "Короткий зміст уже готовий."
 )
-SUMMARY_CACHED_TEXT_HEADER = "📝 Збережений короткий зміст файлу:"
+SUMMARY_CACHED_TEXT_HEADER = "📝 Короткий зміст:"
 
 ACCOUNT_BLOCKED_TEXT = "🚫 Ваш акаунт заблоковано."
 SESSION_NOT_FOUND_TEXT = "❌ Сесія читання не знайдена."

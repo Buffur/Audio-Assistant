@@ -14,6 +14,7 @@ from keyboards.reading import (
     summary_navigation_keyboard,
     summary_only_keyboard,
 )
+from services.document_history_service import save_catalog_document_summary
 from services.parser import summarize_text_with_ai
 from services.reading_service import (
     cleanup_session,
@@ -115,6 +116,7 @@ def _get_cached_summary_text(session: dict) -> str | None:
 
 async def _send_cached_summary(
     callback: types.CallbackQuery,
+    user_id: int,
     summary_text: str,
     already_delivered: bool,
 ) -> None:
@@ -145,6 +147,35 @@ async def _send_cached_summary(
     ):
         await callback.message.answer(message_text)
 
+    await update_reading_session(user_id, summary_delivered=True)
+
+
+async def _save_session_summary_to_catalog(
+    user_id: int,
+    session: dict,
+    summary_text: str,
+) -> None:
+    document_id = session.get("catalog_document_id")
+
+    if document_id is None:
+        return
+
+    try:
+        document_id = int(document_id)
+    except (TypeError, ValueError):
+        logger.warning(
+            "ReadingCallbacks: invalid catalog_document_id=%s user_id=%s",
+            document_id,
+            user_id,
+        )
+        return
+
+    await save_catalog_document_summary(
+        user_id=user_id,
+        document_id=document_id,
+        summary_text=summary_text,
+    )
+
 
 @router.callback_query(F.data.startswith(READ_NEXT_ACTION))
 async def process_read_next(callback: types.CallbackQuery) -> None:
@@ -170,7 +201,7 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
         )
         return
 
-    show_summary_button = _get_cached_summary_text(session) is None
+    show_summary_button = not bool(session.get("summary_delivered"))
 
     if not await try_start_generation(user_id):
         await callback.answer(
@@ -246,6 +277,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
     if cached_summary_text:
         await _send_cached_summary(
             callback,
+            user_id,
             cached_summary_text,
             already_delivered=bool(session.get("summary_delivered")),
         )
@@ -326,6 +358,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         )
         session["summary_text"] = summary_text
         session["summary_delivered"] = False
+        await _save_session_summary_to_catalog(user_id, session, summary_text)
 
         voice_pref, rate = await get_effective_user_settings(user_id)
         tts_provider = await get_effective_user_tts_provider(user_id)
@@ -363,7 +396,6 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         keyboard = summary_navigation_keyboard(
             has_next=has_next,
             session_id=session_id,
-            can_export_audio=await is_premium_user(user_id),
         )
 
         await send_voice_files(

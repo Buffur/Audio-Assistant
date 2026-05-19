@@ -122,6 +122,16 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "text"
     LOG_SERVICE_NAME: str = "audio-assistant"
 
+    APP_VERSION: str = "0.1.0"
+    BOT_RUNTIME_MODE: str = "polling"
+    API_ENABLED: bool = False
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8080
+    API_AUTH_TOKEN: str = ""
+    TELEGRAM_WEBHOOK_URL: str = ""
+    TELEGRAM_WEBHOOK_PATH: str = "/webhook/telegram"
+    TELEGRAM_WEBHOOK_SECRET_TOKEN: str = ""
+
     METRICS_REDIS_STREAM_ENABLED: bool = False
     METRICS_REDIS_STREAM_KEY: str = "metrics:service"
     METRICS_REDIS_STREAM_MAXLEN: int = 10_000
@@ -237,6 +247,7 @@ class Settings(BaseSettings):
         "AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS",
         "METRICS_REDIS_STREAM_MAXLEN",
         "METRICS_ALERT_TIMEOUT_SECONDS",
+        "API_PORT",
     )
     @classmethod
     def _validate_positive_int(cls, value: int, info: Any) -> int:
@@ -364,6 +375,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL"
             )
+
+        return value
+
+    @field_validator("BOT_RUNTIME_MODE")
+    @classmethod
+    def _validate_bot_runtime_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+
+        if value not in {"polling", "webhook"}:
+            raise ValueError("BOT_RUNTIME_MODE must be 'polling' or 'webhook'")
+
+        return value
+
+    @field_validator("TELEGRAM_WEBHOOK_PATH")
+    @classmethod
+    def _validate_webhook_path(cls, value: str) -> str:
+        value = value.strip() or "/webhook/telegram"
+
+        if not value.startswith("/"):
+            raise ValueError("TELEGRAM_WEBHOOK_PATH must start with '/'")
 
         return value
 
@@ -545,6 +576,16 @@ FREE_DAILY_SUMMARY_LIMIT = settings.FREE_DAILY_SUMMARY_LIMIT
 LOG_LEVEL = settings.LOG_LEVEL
 LOG_FORMAT = settings.LOG_FORMAT
 LOG_SERVICE_NAME = settings.LOG_SERVICE_NAME
+
+APP_VERSION = settings.APP_VERSION
+BOT_RUNTIME_MODE = settings.BOT_RUNTIME_MODE
+API_ENABLED = settings.API_ENABLED
+API_HOST = settings.API_HOST
+API_PORT = settings.API_PORT
+API_AUTH_TOKEN = settings.API_AUTH_TOKEN
+TELEGRAM_WEBHOOK_URL = settings.TELEGRAM_WEBHOOK_URL
+TELEGRAM_WEBHOOK_PATH = settings.TELEGRAM_WEBHOOK_PATH
+TELEGRAM_WEBHOOK_SECRET_TOKEN = settings.TELEGRAM_WEBHOOK_SECRET_TOKEN
 
 METRICS_REDIS_STREAM_ENABLED = settings.METRICS_REDIS_STREAM_ENABLED
 METRICS_REDIS_STREAM_KEY = settings.METRICS_REDIS_STREAM_KEY

@@ -13,6 +13,10 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 from config import (
     ADMIN_IDS,
+    API_ENABLED,
+    API_HOST,
+    API_PORT,
+    BOT_RUNTIME_MODE,
     BOT_TOKEN,
     LOG_FORMAT,
     LOG_LEVEL,
@@ -22,6 +26,8 @@ from config import (
     RATE_LIMIT_MAX_EVENTS,
     RATE_LIMIT_PERIOD_SECONDS,
     RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
+    TELEGRAM_WEBHOOK_SECRET_TOKEN,
+    TELEGRAM_WEBHOOK_URL,
 )
 from database.db import init_db
 from services.logging_config import setup_logging
@@ -538,17 +544,72 @@ async def setup_bot_commands(bot: Bot) -> None:
 # MAIN
 # ============================================================
 
-async def main() -> None:
+def create_bot_and_dispatcher() -> tuple[Bot, Dispatcher]:
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    cleanup_task: asyncio.Task | None = None
-    maintenance_task: asyncio.Task | None = None
-
-    await init_db()
-
     setup_middlewares(dp)
     include_project_routers(dp)
+
+    return bot, dp
+
+
+async def _start_api_server(bot: Bot, dp: Dispatcher):
+    import uvicorn
+
+    from services.api_app import create_app
+
+    app = create_app(bot=bot, dispatcher=dp)
+    config = uvicorn.Config(
+        app,
+        host=API_HOST,
+        port=API_PORT,
+        access_log=False,
+        log_config=None,
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+
+    logger.info("API server started on %s:%s", API_HOST, API_PORT)
+
+    return server, task
+
+
+async def _stop_api_server(server, task: asyncio.Task | None) -> None:
+    if server is None or task is None:
+        return
+
+    server.should_exit = True
+
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _setup_webhook(bot: Bot, dp: Dispatcher) -> None:
+    if not TELEGRAM_WEBHOOK_URL:
+        logger.warning(
+            "BOT_RUNTIME_MODE=webhook, but TELEGRAM_WEBHOOK_URL is empty. "
+            "Webhook API will start without registering the URL in Telegram."
+        )
+        return
+
+    await bot.set_webhook(
+        TELEGRAM_WEBHOOK_URL,
+        secret_token=TELEGRAM_WEBHOOK_SECRET_TOKEN or None,
+        allowed_updates=dp.resolve_used_update_types(),
+    )
+    logger.info("Telegram webhook registered: %s", TELEGRAM_WEBHOOK_URL)
+
+
+async def main() -> None:
+    bot, dp = create_bot_and_dispatcher()
+
+    cleanup_task: asyncio.Task | None = None
+    maintenance_task: asyncio.Task | None = None
+    api_server = None
+    api_server_task: asyncio.Task | None = None
+
+    await init_db()
     await setup_bot_commands(bot)
 
     if cleanup_expired_reading_sessions is not None:
@@ -566,12 +627,22 @@ async def main() -> None:
     logger.info("Бот запущено.")
 
     try:
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
+        if BOT_RUNTIME_MODE == "webhook":
+            await _setup_webhook(bot, dp)
+            api_server, api_server_task = await _start_api_server(bot, dp)
+            await api_server_task
+        else:
+            if API_ENABLED:
+                api_server, api_server_task = await _start_api_server(bot, dp)
+
+            await dp.start_polling(
+                bot,
+                allowed_updates=dp.resolve_used_update_types(),
+            )
 
     finally:
+        await _stop_api_server(api_server, api_server_task)
+
         if cleanup_task is not None:
             cleanup_task.cancel()
 

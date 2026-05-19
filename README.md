@@ -18,7 +18,7 @@ Telegram-бот для перетворення тексту, документі
 - Адмін-меню зі статистикою, користувачами, баном, видачею `Ліміт+` і редагуванням лімітів.
 - Адмін-статистика помилок, latency і оцінки витрат для TTS/Gemini/фотографій.
 - Захист від спаму через rate limit.
-- Docker-запуск із Redis для rate limit, reading sessions, audio queue і metrics stream.
+- Docker-запуск із Redis для rate limit, reading sessions, audio queue, metrics stream і health API.
 
 ## Поточна логіка AI/OCR/TTS
 
@@ -297,6 +297,10 @@ RATE_LIMIT_BACKEND=redis
 READING_SESSION_BACKEND=redis
 READING_AUDIO_QUEUE_BACKEND=redis
 READING_AUDIO_QUEUE_MAX_SIZE=20
+API_ENABLED=1
+API_HOST=0.0.0.0
+API_PORT=8080
+API_HOST_PORT=8081
 ```
 
 3. Запустити:
@@ -306,6 +310,17 @@ docker compose up --build
 ```
 
 Дані бота зберігаються у `./data`.
+
+Docker Compose також вмикає lightweight API на `http://localhost:8081` за замовчуванням. Host-порт можна змінити через `API_HOST_PORT`.
+
+- `GET /health` — швидка liveness-перевірка процесу;
+- `GET /ready` — readiness SQLite/Redis;
+- `GET /version` — версія сервісу;
+- `GET /metrics?days=1` — технічні service metrics;
+- `GET /admin/stats?date=YYYY-MM-DD` — агрегована адмін-статистика;
+- `POST /webhook/telegram` — Telegram webhook endpoint для режиму `BOT_RUNTIME_MODE=webhook`.
+
+`/metrics` і `/admin/stats` підтримують Bearer-захист через `API_AUTH_TOKEN`. Якщо токен порожній, endpoint-и відкриті для внутрішнього/docker-доступу.
 
 `.env.example` потрібен як безпечний шаблон конфігурації: він показує всі доступні змінні без реальних токенів, допомагає швидко підняти проєкт після клонування і зменшує ризик випадково закомітити секрети з `.env`.
 
@@ -329,9 +344,10 @@ Piper лишається технічно доступним у коді, але
 Поточний стан після останньої перевірки:
 
 ```text
-234 passed, 1 warning
+247 passed, 1 warning
 ```
 
+Redis integration-тести винесені в `integration_tests/` і запускаються окремо. У GitHub CI Redis піднімається як service, тому ці тести виконуються реально.
 Warning походить із залежності `google-genai` і не є помилкою проєкту.
 
 ## Адмін-функції

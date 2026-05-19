@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from handlers import admin
 from handlers import admin_menu
+from handlers import catalog
 from handlers import messages
 from handlers import premium_admin
 from handlers import reading_callbacks
@@ -159,6 +160,25 @@ def test_reading_keyboard_can_hide_summary_button_after_summary_generated() -> N
     assert stop_callback in callbacks
 
 
+def test_summary_keyboard_does_not_offer_full_audio_export() -> None:
+    keyboard = reading_keyboard.summary_navigation_keyboard(
+        has_next=True,
+        session_id="session-1",
+        can_export_audio=True,
+    )
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    export_callback = reading_keyboard.build_reading_callback(
+        reading_keyboard.READ_EXPORT_AUDIO_ACTION,
+        "session-1",
+    )
+
+    assert export_callback not in callbacks
+
+
 def test_settings_keyboard_does_not_show_tts_provider_choice() -> None:
     keyboard = settings_keyboard.settings_keyboard()
     callbacks = [
@@ -290,6 +310,21 @@ def test_catalog_page_callbacks_and_text() -> None:
 
     assert "Сторінка 2 з 3" in text
     assert "6. <b>Текст</b>" in text
+
+
+def test_catalog_reading_session_restores_cached_summary() -> None:
+    session = catalog._build_catalog_reading_session(
+        document={
+            "id": 42,
+            "summary_text": "Cached summary",
+        },
+        chunks=["one", "two"],
+    )
+
+    assert session["catalog_document_id"] == 42
+    assert session["chunks"] == ["one", "two"]
+    assert session["summary_text"] == "Cached summary"
+    assert session["summary_delivered"] is False
 
 
 def test_messages_limit_extracted_text() -> None:

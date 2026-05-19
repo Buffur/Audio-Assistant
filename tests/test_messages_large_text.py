@@ -46,6 +46,7 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
 
     async def fake_save_document_history_from_message(**kwargs):
         captured["history"] = kwargs
+        return 77
 
     async def fake_set_reading_session(**kwargs):
         captured["session"] = kwargs
@@ -85,6 +86,7 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
     ]
     assert message.status_messages[0].deleted is True
     assert captured["session"]["user_id"] == 123
+    assert captured["session"]["session"]["catalog_document_id"] == 77
     assert captured["send_audio"] == {
         "message": message,
         "user_id": 123,

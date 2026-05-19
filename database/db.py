@@ -94,6 +94,8 @@ async def init_db() -> None:
                 text_length INTEGER NOT NULL DEFAULT 0,
                 chunks_count INTEGER NOT NULL DEFAULT 0,
                 chunks_json TEXT,
+                summary_text TEXT,
+                summary_generated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -102,6 +104,20 @@ async def init_db() -> None:
             logger.info("DB migration: додаю колонку document_history.chunks_json")
             await db.execute(
                 "ALTER TABLE document_history ADD COLUMN chunks_json TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "summary_text"):
+            logger.info("DB migration: додаю колонку document_history.summary_text")
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_text TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "summary_generated_at"):
+            logger.info(
+                "DB migration: додаю колонку document_history.summary_generated_at"
+            )
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_generated_at TIMESTAMP"
             )
 
         await db.execute("""
@@ -731,7 +747,8 @@ async def get_user_document_history(
                 text_length,
                 chunks_count,
                 created_at,
-                chunks_json
+                chunks_json,
+                summary_text
             FROM document_history
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -751,6 +768,7 @@ async def get_user_document_history(
             "chunks_count": row[5],
             "created_at": row[6],
             "has_chunks": bool(row[7]),
+            "has_summary": bool(row[8]),
         }
         for row in rows
     ]
@@ -786,7 +804,9 @@ async def get_user_document_by_id(
                 text_length,
                 chunks_count,
                 created_at,
-                chunks_json
+                chunks_json,
+                summary_text,
+                summary_generated_at
             FROM document_history
             WHERE user_id = ? AND id = ?
             """,
@@ -806,7 +826,30 @@ async def get_user_document_by_id(
         "chunks_count": row[5],
         "created_at": row[6],
         "chunks_json": row[7],
+        "summary_text": row[8],
+        "summary_generated_at": row[9],
     }
+
+
+async def set_document_summary(
+    user_id: int,
+    document_id: int,
+    summary_text: str,
+) -> bool:
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            UPDATE document_history
+            SET
+                summary_text = ?,
+                summary_generated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND id = ?
+            """,
+            (summary_text, user_id, document_id),
+        )
+        await db.commit()
+
+    return bool(cursor.rowcount)
 
 
 async def delete_user_document(

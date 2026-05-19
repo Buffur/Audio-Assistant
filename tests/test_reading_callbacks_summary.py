@@ -2,7 +2,11 @@ import pytest
 import pytest_asyncio
 
 from handlers import reading_callbacks
-from keyboards.reading import READ_SUMMARY_ACTION, build_reading_callback
+from keyboards.reading import (
+    READ_NEXT_ACTION,
+    READ_SUMMARY_ACTION,
+    build_reading_callback,
+)
 from services import reading_session_store as store
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
@@ -38,9 +42,14 @@ class FakeMessage:
 
 
 class FakeCallback:
-    def __init__(self, user_id: int = 1, session_id: str = "session-1") -> None:
+    def __init__(
+        self,
+        user_id: int = 1,
+        session_id: str = "session-1",
+        action: str = READ_SUMMARY_ACTION,
+    ) -> None:
         self.from_user = type("FakeUser", (), {"id": user_id})()
-        self.data = build_reading_callback(READ_SUMMARY_ACTION, session_id)
+        self.data = build_reading_callback(action, session_id)
         self.message = FakeMessage()
         self.answers: list[dict[str, object]] = []
 
@@ -69,6 +78,7 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
             "chunks": ["part 1", "part 2"],
             "index": 0,
             "is_generating": False,
+            "catalog_document_id": 42,
         },
     )
 
@@ -96,6 +106,10 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
     async def fake_send_voice_files(**kwargs) -> None:
         captured["sent_caption"] = kwargs["caption"]
         captured["sent_reply_markup"] = kwargs["reply_markup"]
+
+    async def fake_save_catalog_document_summary(**kwargs) -> bool:
+        captured["catalog_summary"] = kwargs
+        return True
 
     monkeypatch.setattr(
         reading_callbacks,
@@ -128,6 +142,11 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
         "send_voice_files",
         fake_send_voice_files,
     )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "save_catalog_document_summary",
+        fake_save_catalog_document_summary,
+    )
 
     callback = FakeCallback()
 
@@ -138,6 +157,11 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
     assert captured["reserved_for"] == 1
     assert captured["summarized_text"] == "part 1\n\npart 2"
     assert captured["voice_text"] == "cached summary"
+    assert captured["catalog_summary"] == {
+        "user_id": 1,
+        "document_id": 42,
+        "summary_text": "cached summary",
+    }
     assert session["summary_text"] == "cached summary"
     assert session["summary_delivered"] is True
     assert session["is_generating"] is False
@@ -261,3 +285,47 @@ async def test_read_summary_limit_rejection_releases_generation_flag(
     ]
     assert session["is_generating"] is False
     assert "summary_text" not in session
+
+
+@pytest.mark.asyncio
+async def test_read_next_keeps_summary_button_until_cached_summary_is_shown(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 0,
+            "is_generating": False,
+            "summary_text": "cached summary",
+            "summary_delivered": False,
+        },
+    )
+
+    async def fake_is_premium_user(user_id: int) -> bool:
+        return False
+
+    async def fake_send_audio_chunk(message, user_id) -> None:
+        captured["sent"] = True
+
+    monkeypatch.setattr(reading_callbacks, "is_premium_user", fake_is_premium_user)
+    monkeypatch.setattr(reading_callbacks, "send_audio_chunk", fake_send_audio_chunk)
+
+    callback = FakeCallback(action=READ_NEXT_ACTION)
+
+    await reading_callbacks.process_read_next(callback)
+
+    callbacks = [
+        button.callback_data
+        for row in callback.message.reply_markup_edits[0].inline_keyboard
+        for button in row
+    ]
+
+    assert captured["sent"] is True
+    assert any(
+        callback_data.startswith(READ_SUMMARY_ACTION)
+        for callback_data in callbacks
+    )

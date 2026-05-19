@@ -100,6 +100,34 @@ async def test_save_document_history_skips_empty_text_or_chunks(monkeypatch) -> 
         text="",
         chunks=["hello"],
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_save_catalog_document_summary(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_set_document_summary(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(service, "set_document_summary", fake_set_document_summary)
+
+    assert await service.save_catalog_document_summary(
+        user_id=1,
+        document_id=2,
+        summary_text=" Summary ",
+    ) is True
+    assert captured == {
+        "user_id": 1,
+        "document_id": 2,
+        "summary_text": "Summary",
+    }
+
+    assert await service.save_catalog_document_summary(
+        user_id=1,
+        document_id=None,
+        summary_text="Summary",
+    ) is False
     assert await service.save_document_history_from_message(
         user_id=10,
         message=_message(text="hello"),

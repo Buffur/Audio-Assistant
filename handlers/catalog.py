@@ -53,6 +53,25 @@ def _generate_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _build_catalog_reading_session(document: dict, chunks: list[str]) -> dict:
+    session = {
+        "session_id": _generate_session_id(),
+        "chunks": chunks,
+        "index": 0,
+        "is_generating": True,
+        "prefetch_task": None,
+        "catalog_document_id": document.get("id"),
+    }
+
+    summary_text = str(document.get("summary_text") or "").strip()
+
+    if summary_text:
+        session["summary_text"] = summary_text
+        session["summary_delivered"] = False
+
+    return session
+
+
 def _clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
     total_pages = max((total_items + page_size - 1) // page_size, 1)
     page = min(max(page, 0), total_pages - 1)
@@ -253,13 +272,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     await set_reading_session(
         user_id=user_id,
-        session={
-            "session_id": _generate_session_id(),
-            "chunks": chunks,
-            "index": 0,
-            "is_generating": True,
-            "prefetch_task": None,
-        }
+        session=_build_catalog_reading_session(document, chunks),
     )
 
     await callback.message.answer(
