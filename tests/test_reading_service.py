@@ -24,11 +24,13 @@ class FakeStatusMessage:
 class FakeMessage:
     def __init__(self) -> None:
         self.answers: list[str] = []
+        self.answer_kwargs: list[dict] = []
         self.status_messages: list[FakeStatusMessage] = []
         self.chat = type("FakeChat", (), {"id": 1001})()
 
     async def answer(self, text: str, **kwargs):
         self.answers.append(text)
+        self.answer_kwargs.append(kwargs)
         status = FakeStatusMessage(text)
         self.status_messages.append(status)
         return status
@@ -131,7 +133,7 @@ async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) ->
         "session_id": "session-redis",
         "status_message_id": 42,
     }
-    assert "7" in message.answers[0]
+    assert "Почну, щойно звільниться обробка." in message.answers[0]
 
 
 @pytest.mark.asyncio
@@ -293,7 +295,7 @@ async def test_send_audio_chunk_hides_summary_after_summary_generated(
 
     callbacks = [
         button.callback_data
-        for row in captured["reply_markup"].inline_keyboard
+        for row in message.answer_kwargs[-1]["reply_markup"].inline_keyboard
         for button in row
     ]
     session = await store.get_reading_session(1)
@@ -301,6 +303,7 @@ async def test_send_audio_chunk_hides_summary_after_summary_generated(
     assert captured["current_part"] == 1
     assert captured["total_parts"] == 1
     assert captured["audio_files"] == ["chunk.ogg"]
+    assert captured["reply_markup"] is None
     assert all(not callback.startswith(READ_SUMMARY_ACTION) for callback in callbacks)
     assert message.answers == [reading_service.ALL_PARTS_SENT_AFTER_SUMMARY_TEXT]
     assert session["index"] == 1
@@ -369,9 +372,10 @@ async def test_send_audio_chunk_keeps_summary_button_for_cached_catalog_summary(
 
     callbacks = [
         button.callback_data
-        for row in captured["reply_markup"].inline_keyboard
+        for row in message.answer_kwargs[-1]["reply_markup"].inline_keyboard
         for button in row
     ]
 
+    assert captured["reply_markup"] is None
     assert any(callback.startswith(READ_SUMMARY_ACTION) for callback in callbacks)
     assert message.answers == [reading_service.ALL_PARTS_SENT_TEXT]

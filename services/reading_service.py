@@ -1063,7 +1063,7 @@ async def _send_audio_chunk_now(
             message=message,
             audio_files=audio_files,
             caption=part_caption,
-            reply_markup=keyboard,
+            reply_markup=None if not has_next else keyboard,
             caption_builder=lambda audio_index, audio_count, _caption: (
                 build_part_audio_caption(
                     current_part=index + 1,
@@ -1078,7 +1078,8 @@ async def _send_audio_chunk_now(
             await message.answer(
                 ALL_PARTS_SENT_AFTER_SUMMARY_TEXT
                 if summary_already_delivered
-                else ALL_PARTS_SENT_TEXT
+                else ALL_PARTS_SENT_TEXT,
+                reply_markup=keyboard,
             )
             return
 

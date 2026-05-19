@@ -14,7 +14,10 @@ from keyboards.reading import (
     summary_navigation_keyboard,
     summary_only_keyboard,
 )
-from services.document_history_service import save_catalog_document_summary
+from services.document_history_service import (
+    save_catalog_document_summary,
+    save_catalog_document_summary_audio,
+)
 from services.parser import summarize_text_with_ai
 from services.reading_service import (
     cleanup_session,
@@ -41,7 +44,7 @@ from services.user_settings_service import (
     get_effective_user_tts_provider,
 )
 from services.voice_selector import select_voice_for_text
-from services.voice_sender import send_voice_files
+from services.voice_sender import send_voice_file_ids, send_voice_files
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
     EXPORT_AUDIO_ACCESS_DENIED_TEXT,
@@ -54,19 +57,17 @@ from texts.messages import (
     SUMMARY_AUDIO_GENERATION_ERROR,
     SUMMARY_ALREADY_READY_TEXT,
     SUMMARY_ALREADY_SENT_TEXT,
-    SUMMARY_CACHED_TEXT_HEADER,
     SUMMARY_CAPTION_TEXT,
     SUMMARY_GENERATION_ERROR,
     SUMMARY_PREPARING_TEXT,
+    SUMMARY_VOICE_PREPARING_TEXT,
     WAIT_AUDIO_PROCESSING_TEXT,
     WAIT_PROCESSING_TEXT,
 )
-from utils.splitter import split_text
 from utils.text_checks import is_error_text
 
 router = Router()
 logger = logging.getLogger(__name__)
-CACHED_SUMMARY_MESSAGE_MAX_LENGTH = 3500
 
 
 def _is_matching_session(
@@ -114,11 +115,124 @@ def _get_cached_summary_text(session: dict) -> str | None:
     return summary_text or None
 
 
+def _get_summary_voice_file_ids(session: dict) -> list[str]:
+    file_ids = session.get("summary_voice_file_ids") or []
+
+    if not isinstance(file_ids, list):
+        return []
+
+    return [str(file_id) for file_id in file_ids if str(file_id).strip()]
+
+
+def _summary_voice_matches(
+    session: dict,
+    *,
+    voice: str,
+    rate: str,
+    provider: str,
+) -> bool:
+    return (
+        session.get("summary_voice_voice") == voice
+        and session.get("summary_voice_rate") == rate
+        and session.get("summary_voice_provider") == provider
+    )
+
+
+def _summary_has_next(session: dict) -> bool:
+    chunks = session.get("chunks") or []
+    current_index = int(session.get("index", 0))
+
+    return current_index < len(chunks)
+
+
+def _summary_keyboard(
+    session: dict,
+    callback_session_id: str | None,
+):
+    session_id = session.get("session_id", callback_session_id or "legacy")
+
+    return summary_navigation_keyboard(
+        has_next=_summary_has_next(session),
+        session_id=session_id,
+    )
+
+
+async def _get_summary_audio_settings(
+    user_id: int,
+    summary_text: str,
+) -> tuple[str, str, str]:
+    voice_pref, rate = await get_effective_user_settings(user_id)
+    provider = await get_effective_user_tts_provider(user_id)
+    voice = select_voice_for_text(summary_text, voice_pref)
+
+    return voice, rate, provider
+
+
+async def _save_session_summary_audio_to_catalog(
+    user_id: int,
+    session: dict,
+    voice_file_ids: list[str],
+    voice: str,
+    rate: str,
+    provider: str,
+) -> None:
+    document_id = session.get("catalog_document_id")
+
+    if document_id is None:
+        return
+
+    try:
+        document_id = int(document_id)
+    except (TypeError, ValueError):
+        logger.warning(
+            "ReadingCallbacks: invalid catalog_document_id=%s user_id=%s",
+            document_id,
+            user_id,
+        )
+        return
+
+    await save_catalog_document_summary_audio(
+        user_id=user_id,
+        document_id=document_id,
+        voice_file_ids=voice_file_ids,
+        voice=voice,
+        rate=rate,
+        provider=provider,
+    )
+
+
+async def _mark_summary_delivered(
+    user_id: int,
+    session: dict,
+    *,
+    voice_file_ids: list[str] | None = None,
+    voice: str | None = None,
+    rate: str | None = None,
+    provider: str | None = None,
+) -> None:
+    updates = {
+        "summary_delivered": True,
+    }
+
+    if voice_file_ids:
+        updates.update({
+            "summary_voice_file_ids": voice_file_ids,
+            "summary_voice_voice": voice,
+            "summary_voice_rate": rate,
+            "summary_voice_provider": provider,
+        })
+
+    await update_reading_session(user_id, **updates)
+    session.update(updates)
+
+
 async def _send_cached_summary(
     callback: types.CallbackQuery,
     user_id: int,
+    session: dict,
     summary_text: str,
     already_delivered: bool,
+    callback_session_id: str | None,
 ) -> None:
     if not callback.message:
         await callback.answer(
@@ -131,23 +245,132 @@ async def _send_cached_summary(
         )
         return
 
-    await _safe_edit_reply_markup(callback, reply_markup=None)
-
     if already_delivered:
+        await _safe_edit_reply_markup(callback, reply_markup=None)
         await callback.answer(SUMMARY_ALREADY_SENT_TEXT, show_alert=True)
         return
 
-    await callback.answer(SUMMARY_ALREADY_READY_TEXT)
+    if not await try_start_generation(user_id):
+        await callback.answer(
+            WAIT_PROCESSING_TEXT,
+            show_alert=True,
+        )
+        return
 
-    cached_text = f"{SUMMARY_CACHED_TEXT_HEADER}\n\n{summary_text}"
+    status_msg = None
 
-    for message_text in split_text(
-        cached_text,
-        max_length=CACHED_SUMMARY_MESSAGE_MAX_LENGTH,
-    ):
-        await callback.message.answer(message_text)
+    try:
+        await callback.answer(SUMMARY_ALREADY_READY_TEXT)
+        await _safe_edit_reply_markup(callback, reply_markup=None)
 
-    await update_reading_session(user_id, summary_delivered=True)
+        voice, rate, provider = await _get_summary_audio_settings(
+            user_id,
+            summary_text,
+        )
+        keyboard = _summary_keyboard(session, callback_session_id)
+        cached_file_ids = _get_summary_voice_file_ids(session)
+
+        if cached_file_ids and _summary_voice_matches(
+            session,
+            voice=voice,
+            rate=rate,
+            provider=provider,
+        ):
+            sent_file_ids = await send_voice_file_ids(
+                message=callback.message,
+                voice_file_ids=cached_file_ids,
+                caption=SUMMARY_CAPTION_TEXT,
+                reply_markup=keyboard,
+            ) or []
+
+            if sent_file_ids:
+                await _mark_summary_delivered(
+                    user_id,
+                    session,
+                    voice_file_ids=sent_file_ids,
+                    voice=voice,
+                    rate=rate,
+                    provider=provider,
+                )
+                await _save_session_summary_audio_to_catalog(
+                    user_id,
+                    session,
+                    sent_file_ids,
+                    voice,
+                    rate,
+                    provider,
+                )
+                return
+
+        status_msg = await callback.message.answer(SUMMARY_VOICE_PREPARING_TEXT)
+
+        audio_files = await generate_voice(
+            text=summary_text,
+            voice=voice,
+            rate=rate,
+            provider_chain=build_user_tts_provider_chain(
+                provider,
+                voice=voice,
+            ),
+        )
+
+        if not audio_files:
+            logger.warning(
+                "ReadingCallbacks: TTS не створив cached summary audio "
+                "для user_id=%s",
+                user_id,
+            )
+            await reply_with_voice(
+                callback.message,
+                user_id,
+                SUMMARY_AUDIO_GENERATION_ERROR,
+                status_msg,
+            )
+            return
+
+        sent_file_ids = await send_voice_files(
+            message=callback.message,
+            audio_files=audio_files,
+            caption=SUMMARY_CAPTION_TEXT,
+            reply_markup=keyboard,
+        ) or []
+
+        await _mark_summary_delivered(
+            user_id,
+            session,
+            voice_file_ids=sent_file_ids,
+            voice=voice,
+            rate=rate,
+            provider=provider,
+        )
+        await _save_session_summary_audio_to_catalog(
+            user_id,
+            session,
+            sent_file_ids,
+            voice,
+            rate,
+            provider,
+        )
+
+        await safe_delete_message(status_msg)
+
+    except Exception:
+        logger.exception(
+            "ReadingCallbacks: помилка cached summary audio user_id=%s",
+            user_id,
+        )
+
+        if callback.message:
+            await reply_with_voice(
+                callback.message,
+                user_id,
+                SUMMARY_AUDIO_GENERATION_ERROR,
+                status_msg,
+            )
+
+    finally:
+        if await has_reading_session(user_id):
+            await finish_generation(user_id)
 
 
 async def _save_session_summary_to_catalog(
@@ -278,8 +501,10 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         await _send_cached_summary(
             callback,
             user_id,
+            session,
             cached_summary_text,
             already_delivered=bool(session.get("summary_delivered")),
+            callback_session_id=callback_session_id,
         )
         return
 
@@ -389,24 +614,31 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             )
             return
 
-        current_index = int(session.get("index", 0))
-        has_next = current_index < len(chunks)
-        session_id = session.get("session_id", callback_session_id or "legacy")
+        keyboard = _summary_keyboard(session, callback_session_id)
 
-        keyboard = summary_navigation_keyboard(
-            has_next=has_next,
-            session_id=session_id,
-        )
-
-        await send_voice_files(
+        sent_file_ids = await send_voice_files(
             message=callback.message,
             audio_files=audio_files,
             caption=SUMMARY_CAPTION_TEXT,
             reply_markup=keyboard,
-        )
+        ) or []
 
-        await update_reading_session(user_id, summary_delivered=True)
-        session["summary_delivered"] = True
+        await _mark_summary_delivered(
+            user_id,
+            session,
+            voice_file_ids=sent_file_ids,
+            voice=voice,
+            rate=rate,
+            provider=tts_provider,
+        )
+        await _save_session_summary_audio_to_catalog(
+            user_id,
+            session,
+            sent_file_ids,
+            voice,
+            rate,
+            tts_provider,
+        )
 
         await safe_delete_message(status_msg)
 

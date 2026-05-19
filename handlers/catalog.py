@@ -8,11 +8,17 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from keyboards.catalog import (
+    CATALOG_CLEAR_CANCEL_CALLBACK,
+    CATALOG_CLEAR_CONFIRM_CALLBACK,
+    CATALOG_DELETE_CANCEL_PREFIX,
+    CATALOG_DELETE_CONFIRM_PREFIX,
     CATALOG_DELETE_PREFIX,
     CATALOG_OPEN_PREFIX,
     CATALOG_PAGE_PREFIX,
     CATALOG_UNAVAILABLE_PREFIX,
+    catalog_clear_confirmation_keyboard,
     catalog_keyboard,
+    catalog_delete_confirmation_keyboard,
     parse_catalog_page,
     parse_catalog_document_id,
 )
@@ -20,6 +26,7 @@ from services.document_history_service import (
     clear_document_history,
     count_recent_document_history,
     delete_catalog_document,
+    deserialize_voice_file_ids,
     get_catalog_document_chunks,
     DEFAULT_HISTORY_LIMIT,
     get_recent_document_history,
@@ -34,6 +41,9 @@ from services.reading_session_store import (
 )
 from texts.catalog import (
     CATALOG_CLEARED_TEXT,
+    CATALOG_CLEAR_CANCELLED_TEXT,
+    CATALOG_CLEAR_CONFIRM_TEXT,
+    CATALOG_DELETE_CONFIRM_TEXT,
     CATALOG_DOCUMENT_DELETED_TEXT,
     CATALOG_DOCUMENT_NOT_FOUND_TEXT,
     CATALOG_DOCUMENT_WITHOUT_CHUNKS_TEXT,
@@ -68,6 +78,18 @@ def _build_catalog_reading_session(document: dict, chunks: list[str]) -> dict:
     if summary_text:
         session["summary_text"] = summary_text
         session["summary_delivered"] = False
+
+        summary_voice_file_ids = deserialize_voice_file_ids(
+            document.get("summary_voice_file_ids_json")
+        )
+
+        if summary_voice_file_ids:
+            session["summary_voice_file_ids"] = summary_voice_file_ids
+            session["summary_voice_voice"] = document.get("summary_voice_voice")
+            session["summary_voice_rate"] = document.get("summary_voice_rate")
+            session["summary_voice_provider"] = document.get(
+                "summary_voice_provider"
+            )
 
     return session
 
@@ -204,12 +226,32 @@ async def catalog_page_callback(callback: types.CallbackQuery) -> None:
 @router.message(Command("history_clear"))
 async def catalog_clear_handler(message: Message) -> None:
     """
-    Очищає каталог матеріалів користувача.
+    Просить підтвердження перед очищенням каталогу матеріалів користувача.
     """
-    user_id = message.from_user.id
+    await message.answer(
+        CATALOG_CLEAR_CONFIRM_TEXT,
+        reply_markup=catalog_clear_confirmation_keyboard(),
+    )
+
+
+@router.callback_query(F.data == CATALOG_CLEAR_CONFIRM_CALLBACK)
+async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
+    user_id = callback.from_user.id
 
     await clear_document_history(user_id=user_id)
-    await message.answer(CATALOG_CLEARED_TEXT)
+
+    if callback.message:
+        await callback.message.edit_text(CATALOG_CLEARED_TEXT)
+
+    await callback.answer(CATALOG_CLEARED_TEXT)
+
+
+@router.callback_query(F.data == CATALOG_CLEAR_CANCEL_CALLBACK)
+async def catalog_clear_cancel_callback(callback: types.CallbackQuery) -> None:
+    if callback.message:
+        await callback.message.edit_text(CATALOG_CLEAR_CANCELLED_TEXT)
+
+    await callback.answer(CATALOG_CLEAR_CANCELLED_TEXT)
 
 
 @router.message(Command("catalog_help"))
@@ -286,6 +328,48 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
     await safe_delete_message(status_msg)
 
     await send_audio_chunk(callback.message, user_id)
+
+
+@router.callback_query(F.data.startswith(CATALOG_DELETE_CONFIRM_PREFIX))
+async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None:
+    """
+    Показує підтвердження перед видаленням документа.
+    """
+    document_id = parse_catalog_document_id(
+        callback_data=callback.data,
+        prefix=CATALOG_DELETE_CONFIRM_PREFIX,
+    )
+
+    if document_id is None:
+        await callback.answer(CATALOG_DOCUMENT_NOT_FOUND_TEXT, show_alert=True)
+        return
+
+    page = parse_catalog_page(callback.data, CATALOG_DELETE_CONFIRM_PREFIX) or 0
+
+    await callback.message.edit_text(
+        CATALOG_DELETE_CONFIRM_TEXT,
+        reply_markup=catalog_delete_confirmation_keyboard(
+            document_id=document_id,
+            page=page,
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CATALOG_DELETE_CANCEL_PREFIX))
+async def cancel_catalog_document_delete(callback: types.CallbackQuery) -> None:
+    """
+    Повертає каталог після скасування видалення.
+    """
+    user_id = callback.from_user.id
+    page = parse_catalog_page(callback.data, CATALOG_DELETE_CANCEL_PREFIX) or 0
+
+    await _refresh_catalog_message(
+        message=callback.message,
+        user_id=user_id,
+        page=page,
+    )
+    await callback.answer("Видалення скасовано.")
 
 
 @router.callback_query(F.data.startswith(CATALOG_DELETE_PREFIX))

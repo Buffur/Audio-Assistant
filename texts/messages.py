@@ -40,6 +40,7 @@ AUDIO_QUEUE_FULL_TEXT = (
 )
 
 SUMMARY_PREPARING_TEXT = "⏳ Готую короткий зміст за допомогою ШІ..."
+SUMMARY_VOICE_PREPARING_TEXT = "⏳ Готую озвучку короткого змісту..."
 SUMMARY_AUDIO_GENERATION_ERROR = "❌ Не вдалося згенерувати аудіо короткого змісту."
 SUMMARY_GENERATION_ERROR = "❌ Сталася помилка генерації."
 SUMMARY_CAPTION_TEXT = "📝 Короткий зміст від ШІ"
@@ -90,7 +91,7 @@ def build_audio_generation_queued_text(
 ) -> str:
     return (
         f"⏳ Додав частину {current_part} з {total_parts} у чергу озвучки. "
-        f"Позиція: {queue_position}."
+        "Почну, щойно звільниться обробка."
     )
 
 
@@ -158,7 +159,7 @@ def build_export_audio_queued_text(
 ) -> str:
     return (
         f"⏳ Додав повну озвучку з {total_parts} частин у чергу. "
-        f"Позиція: {queue_position}."
+        "Почну, щойно звільниться обробка."
     )
 
 

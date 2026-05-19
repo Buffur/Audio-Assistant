@@ -117,6 +117,7 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     assert document is not None
     assert document["chunks_json"] == '["one", "two"]'
     assert document["summary_text"] is None
+    assert document["summary_voice_file_ids_json"] is None
 
     assert await db_module.set_document_summary(
         user_id=1,
@@ -128,8 +129,24 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     assert document_with_summary["summary_text"] == "Summary"
     assert document_with_summary["summary_generated_at"] is not None
 
+    assert await db_module.set_document_summary_audio(
+        user_id=1,
+        document_id=document_id,
+        voice_file_ids_json='["voice-file-id"]',
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        provider="edge",
+    ) is True
+
+    document_with_audio = await db_module.get_user_document_by_id(1, document_id)
+    assert document_with_audio["summary_voice_file_ids_json"] == '["voice-file-id"]'
+    assert document_with_audio["summary_voice_voice"] == "uk-UA-PolinaNeural"
+    assert document_with_audio["summary_voice_rate"] == "+0%"
+    assert document_with_audio["summary_voice_provider"] == "edge"
+
     history_with_summary = await db_module.get_user_document_history(1)
     assert history_with_summary[0]["has_summary"] is True
+    assert history_with_summary[0]["has_summary_voice"] is True
 
     await db_module.delete_user_document(1, document_id)
     assert await db_module.get_user_document_by_id(1, document_id) is None

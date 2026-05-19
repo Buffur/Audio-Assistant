@@ -96,6 +96,10 @@ async def init_db() -> None:
                 chunks_json TEXT,
                 summary_text TEXT,
                 summary_generated_at TIMESTAMP,
+                summary_voice_file_ids_json TEXT,
+                summary_voice_voice TEXT,
+                summary_voice_rate TEXT,
+                summary_voice_provider TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -118,6 +122,42 @@ async def init_db() -> None:
             )
             await db.execute(
                 "ALTER TABLE document_history ADD COLUMN summary_generated_at TIMESTAMP"
+            )
+
+        if not await _column_exists(
+            db,
+            "document_history",
+            "summary_voice_file_ids_json",
+        ):
+            logger.info(
+                "DB migration: додаю колонку document_history.summary_voice_file_ids_json"
+            )
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_voice_file_ids_json TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "summary_voice_voice"):
+            logger.info(
+                "DB migration: додаю колонку document_history.summary_voice_voice"
+            )
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_voice_voice TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "summary_voice_rate"):
+            logger.info(
+                "DB migration: додаю колонку document_history.summary_voice_rate"
+            )
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_voice_rate TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "summary_voice_provider"):
+            logger.info(
+                "DB migration: додаю колонку document_history.summary_voice_provider"
+            )
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN summary_voice_provider TEXT"
             )
 
         await db.execute("""
@@ -748,7 +788,8 @@ async def get_user_document_history(
                 chunks_count,
                 created_at,
                 chunks_json,
-                summary_text
+                summary_text,
+                summary_voice_file_ids_json
             FROM document_history
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -769,6 +810,7 @@ async def get_user_document_history(
             "created_at": row[6],
             "has_chunks": bool(row[7]),
             "has_summary": bool(row[8]),
+            "has_summary_voice": bool(row[9]),
         }
         for row in rows
     ]
@@ -806,7 +848,11 @@ async def get_user_document_by_id(
                 created_at,
                 chunks_json,
                 summary_text,
-                summary_generated_at
+                summary_generated_at,
+                summary_voice_file_ids_json,
+                summary_voice_voice,
+                summary_voice_rate,
+                summary_voice_provider
             FROM document_history
             WHERE user_id = ? AND id = ?
             """,
@@ -828,6 +874,10 @@ async def get_user_document_by_id(
         "chunks_json": row[7],
         "summary_text": row[8],
         "summary_generated_at": row[9],
+        "summary_voice_file_ids_json": row[10],
+        "summary_voice_voice": row[11],
+        "summary_voice_rate": row[12],
+        "summary_voice_provider": row[13],
     }
 
 
@@ -846,6 +896,39 @@ async def set_document_summary(
             WHERE user_id = ? AND id = ?
             """,
             (summary_text, user_id, document_id),
+        )
+        await db.commit()
+
+    return bool(cursor.rowcount)
+
+
+async def set_document_summary_audio(
+    user_id: int,
+    document_id: int,
+    voice_file_ids_json: str,
+    voice: str,
+    rate: str,
+    provider: str,
+) -> bool:
+    async with get_db_connection() as db:
+        cursor = await db.execute(
+            """
+            UPDATE document_history
+            SET
+                summary_voice_file_ids_json = ?,
+                summary_voice_voice = ?,
+                summary_voice_rate = ?,
+                summary_voice_provider = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                voice_file_ids_json,
+                voice,
+                rate,
+                provider,
+                user_id,
+                document_id,
+            ),
         )
         await db.commit()
 

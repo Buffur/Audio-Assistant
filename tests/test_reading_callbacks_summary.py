@@ -12,7 +12,6 @@ from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
     SUMMARY_ALREADY_READY_TEXT,
     SUMMARY_ALREADY_SENT_TEXT,
-    SUMMARY_CACHED_TEXT_HEADER,
 )
 
 
@@ -106,9 +105,14 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
     async def fake_send_voice_files(**kwargs) -> None:
         captured["sent_caption"] = kwargs["caption"]
         captured["sent_reply_markup"] = kwargs["reply_markup"]
+        return ["summary-file-id"]
 
     async def fake_save_catalog_document_summary(**kwargs) -> bool:
         captured["catalog_summary"] = kwargs
+        return True
+
+    async def fake_save_catalog_document_summary_audio(**kwargs) -> bool:
+        captured["catalog_summary_audio"] = kwargs
         return True
 
     monkeypatch.setattr(
@@ -147,6 +151,16 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
         "save_catalog_document_summary",
         fake_save_catalog_document_summary,
     )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "save_catalog_document_summary_audio",
+        fake_save_catalog_document_summary_audio,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "select_voice_for_text",
+        lambda text, voice_pref: "uk-UA-PolinaNeural",
+    )
 
     callback = FakeCallback()
 
@@ -162,14 +176,27 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
         "document_id": 42,
         "summary_text": "cached summary",
     }
+    assert captured["catalog_summary_audio"] == {
+        "user_id": 1,
+        "document_id": 42,
+        "voice_file_ids": ["summary-file-id"],
+        "voice": "uk-UA-PolinaNeural",
+        "rate": "+0%",
+        "provider": "edge",
+    }
     assert session["summary_text"] == "cached summary"
     assert session["summary_delivered"] is True
+    assert session["summary_voice_file_ids"] == ["summary-file-id"]
     assert session["is_generating"] is False
     assert callback.message.reply_markup_edits == [None]
 
 
 @pytest.mark.asyncio
-async def test_read_summary_uses_cached_text_without_ai_or_quota(monkeypatch) -> None:
+async def test_read_summary_uses_cached_text_for_tts_without_ai_or_quota(
+    monkeypatch,
+) -> None:
+    captured = {}
+
     await store.set_reading_session(
         user_id=1,
         session={
@@ -184,10 +211,40 @@ async def test_read_summary_uses_cached_text_without_ai_or_quota(monkeypatch) ->
     async def fail_async(*args, **kwargs):
         raise AssertionError("cached summary path must not regenerate work")
 
-    monkeypatch.setattr(reading_callbacks, "try_start_generation", fail_async)
     monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
     monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+
+    async def fake_get_effective_user_settings(user_id: int):
+        return "uk-UA-PolinaNeural", "+0%"
+
+    async def fake_get_effective_user_tts_provider(user_id: int) -> str:
+        return "edge"
+
+    async def fake_generate_voice(**kwargs):
+        captured["voice_text"] = kwargs["text"]
+        return ["summary.ogg"]
+
+    async def fake_send_voice_files(**kwargs):
+        captured["sent_caption"] = kwargs["caption"]
+        return ["cached-summary-file-id"]
+
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_settings",
+        fake_get_effective_user_settings,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_tts_provider",
+        fake_get_effective_user_tts_provider,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "select_voice_for_text",
+        lambda text, voice_pref: "uk-UA-PolinaNeural",
+    )
+    monkeypatch.setattr(reading_callbacks, "generate_voice", fake_generate_voice)
+    monkeypatch.setattr(reading_callbacks, "send_voice_files", fake_send_voice_files)
 
     callback = FakeCallback()
 
@@ -200,9 +257,81 @@ async def test_read_summary_uses_cached_text_without_ai_or_quota(monkeypatch) ->
         }
     ]
     assert callback.message.reply_markup_edits == [None]
-    assert callback.message.answers
-    assert SUMMARY_CACHED_TEXT_HEADER in callback.message.answers[0]
-    assert "cached summary" in callback.message.answers[0]
+    assert captured["voice_text"] == "cached summary"
+    assert captured["sent_caption"] == reading_callbacks.SUMMARY_CAPTION_TEXT
+    session = await store.get_reading_session(1)
+    assert session["summary_voice_file_ids"] == ["cached-summary-file-id"]
+
+
+@pytest.mark.asyncio
+async def test_read_summary_reuses_cached_voice_file_id(monkeypatch) -> None:
+    captured = {}
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 0,
+            "is_generating": False,
+            "summary_text": "cached summary",
+            "summary_voice_file_ids": ["telegram-file-id"],
+            "summary_voice_voice": "uk-UA-PolinaNeural",
+            "summary_voice_rate": "+0%",
+            "summary_voice_provider": "edge",
+        },
+    )
+
+    async def fail_async(*args, **kwargs):
+        raise AssertionError("cached voice path must not regenerate work")
+
+    async def fake_get_effective_user_settings(user_id: int):
+        return "uk-UA-PolinaNeural", "+0%"
+
+    async def fake_get_effective_user_tts_provider(user_id: int) -> str:
+        return "edge"
+
+    async def fake_send_voice_file_ids(**kwargs):
+        captured["voice_file_ids"] = kwargs["voice_file_ids"]
+        captured["caption"] = kwargs["caption"]
+        return ["telegram-file-id"]
+
+    monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
+    monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
+    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_settings",
+        fake_get_effective_user_settings,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_tts_provider",
+        fake_get_effective_user_tts_provider,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "select_voice_for_text",
+        lambda text, voice_pref: "uk-UA-PolinaNeural",
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "send_voice_file_ids",
+        fake_send_voice_file_ids,
+    )
+
+    callback = FakeCallback()
+
+    await reading_callbacks.process_read_summary(callback)
+
+    assert captured["voice_file_ids"] == ["telegram-file-id"]
+    assert captured["caption"] == reading_callbacks.SUMMARY_CAPTION_TEXT
+    assert callback.answers == [
+        {
+            "text": SUMMARY_ALREADY_READY_TEXT,
+            "show_alert": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio

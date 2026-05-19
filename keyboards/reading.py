@@ -8,7 +8,7 @@ READ_STOP_ACTION = "read_stop"
 READ_EXPORT_AUDIO_ACTION = "read_export_audio"
 
 CALLBACK_SEPARATOR = ":"
-SUMMARY_BUTTON_TEXT = "📝 Короткий зміст файлу"
+SUMMARY_BUTTON_TEXT = "📝 Зміст"
 
 
 def build_reading_callback(action: str, session_id: str) -> str:
@@ -48,15 +48,15 @@ def reading_navigation_keyboard(
     """
     Клавіатура для навігації під час читання основного тексту.
 
-    Якщо є наступна частина, додається кнопка «Слухати далі».
-    Кнопки «Короткий зміст» і «Закінчити» доступні завжди.
+    Якщо є наступна частина, додається кнопка «Далі».
+    Кнопки «Зміст» і «Завершити» доступні окремими рядками.
     """
     keyboard = []
 
     if has_next:
         keyboard.append([
             InlineKeyboardButton(
-                text="▶️ Слухати далі",
+                text="▶️ Далі",
                 callback_data=build_reading_callback(
                     READ_NEXT_ACTION,
                     session_id
@@ -67,7 +67,7 @@ def reading_navigation_keyboard(
     if can_export_audio:
         keyboard.append([
             InlineKeyboardButton(
-                text="🎧 Зібрати в один файл",
+                text="🎧 Один файл",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
@@ -75,10 +75,8 @@ def reading_navigation_keyboard(
             )
         ])
 
-    action_row = []
-
     if show_summary_button:
-        action_row.append(
+        keyboard.append([
             InlineKeyboardButton(
                 text=SUMMARY_BUTTON_TEXT,
                 callback_data=build_reading_callback(
@@ -86,19 +84,17 @@ def reading_navigation_keyboard(
                     session_id
                 )
             )
-        )
+        ])
 
-    action_row.append(
+    keyboard.append([
         InlineKeyboardButton(
-            text="⏹ Закінчити",
+            text="⏹ Завершити",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id
             )
-        ),
-    )
-
-    keyboard.append(action_row)
+        )
+    ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -111,15 +107,15 @@ def summary_only_keyboard(
     """
     Клавіатура для попередніх voice-повідомлень.
 
-    Коли користувач натиснув «Слухати далі», ми прибираємо тільки цю кнопку,
-    але залишаємо «Короткий зміст» і «Закінчити».
+    Коли користувач натиснув «Далі», ми прибираємо тільки цю кнопку,
+    але залишаємо «Зміст» і «Завершити».
     """
     export_rows = []
 
     if can_export_audio:
         export_rows.append([
             InlineKeyboardButton(
-                text="🎧 Зібрати в один файл",
+                text="🎧 Один файл",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
@@ -127,10 +123,8 @@ def summary_only_keyboard(
             )
         ])
 
-    action_row = []
-
     if show_summary_button:
-        action_row.append(
+        export_rows.append([
             InlineKeyboardButton(
                 text=SUMMARY_BUTTON_TEXT,
                 callback_data=build_reading_callback(
@@ -138,22 +132,19 @@ def summary_only_keyboard(
                     session_id
                 )
             )
-        )
+        ])
 
-    action_row.append(
+    export_rows.append([
         InlineKeyboardButton(
-            text="⏹ Закінчити",
+            text="⏹ Завершити",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id
             )
         )
-    )
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        *export_rows,
-        action_row,
     ])
+
+    return InlineKeyboardMarkup(inline_keyboard=export_rows)
 
 
 def summary_navigation_keyboard(
@@ -172,7 +163,7 @@ def summary_navigation_keyboard(
     if has_next:
         keyboard.append([
             InlineKeyboardButton(
-                text="▶️ Продовжити читання оригіналу",
+                text="▶️ До оригіналу",
                 callback_data=build_reading_callback(
                     READ_NEXT_ACTION,
                     session_id
@@ -182,7 +173,7 @@ def summary_navigation_keyboard(
 
     keyboard.append([
         InlineKeyboardButton(
-            text="⏹ Закінчити",
+            text="⏹ Завершити",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id

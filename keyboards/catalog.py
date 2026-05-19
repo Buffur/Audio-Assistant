@@ -3,7 +3,11 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 CATALOG_OPEN_PREFIX = "catalog_open:"
+CATALOG_DELETE_CONFIRM_PREFIX = "catalog_delete_confirm:"
 CATALOG_DELETE_PREFIX = "catalog_delete:"
+CATALOG_DELETE_CANCEL_PREFIX = "catalog_delete_cancel:"
+CATALOG_CLEAR_CONFIRM_CALLBACK = "catalog_clear:confirm"
+CATALOG_CLEAR_CANCEL_CALLBACK = "catalog_clear:cancel"
 CATALOG_UNAVAILABLE_PREFIX = "catalog_unavailable:"
 CATALOG_PAGE_PREFIX = "catalog_page:"
 
@@ -14,6 +18,14 @@ def build_catalog_open_callback(document_id: int) -> str:
 
 def build_catalog_delete_callback(document_id: int, page: int = 0) -> str:
     return f"{CATALOG_DELETE_PREFIX}{document_id}:{max(page, 0)}"
+
+
+def build_catalog_delete_confirm_callback(document_id: int, page: int = 0) -> str:
+    return f"{CATALOG_DELETE_CONFIRM_PREFIX}{document_id}:{max(page, 0)}"
+
+
+def build_catalog_delete_cancel_callback(document_id: int, page: int = 0) -> str:
+    return f"{CATALOG_DELETE_CANCEL_PREFIX}{document_id}:{max(page, 0)}"
 
 
 def build_catalog_unavailable_callback(document_id: int) -> str:
@@ -42,7 +54,11 @@ def parse_catalog_page(callback_data: str | None, prefix: str) -> int | None:
 
     raw_value = callback_data.replace(prefix, "", 1)
 
-    if prefix == CATALOG_DELETE_PREFIX:
+    if prefix in {
+        CATALOG_DELETE_PREFIX,
+        CATALOG_DELETE_CONFIRM_PREFIX,
+        CATALOG_DELETE_CANCEL_PREFIX,
+    }:
         if ":" not in raw_value:
             return None
 
@@ -93,7 +109,10 @@ def catalog_keyboard(
 
         delete_button = InlineKeyboardButton(
             text=f"🗑 Видалити #{item_number}",
-            callback_data=build_catalog_delete_callback(document_id, page=page)
+            callback_data=build_catalog_delete_confirm_callback(
+                document_id,
+                page=page,
+            )
         )
 
         keyboard.append([open_button, delete_button])
@@ -126,3 +145,43 @@ def catalog_keyboard(
     keyboard.append(navigation_row)
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def catalog_delete_confirmation_keyboard(
+    document_id: int,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🗑 Так, видалити",
+                callback_data=build_catalog_delete_callback(document_id, page=page),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="↩️ Скасувати",
+                callback_data=build_catalog_delete_cancel_callback(
+                    document_id,
+                    page=page,
+                ),
+            )
+        ],
+    ])
+
+
+def catalog_clear_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🧹 Так, очистити",
+                callback_data=CATALOG_CLEAR_CONFIRM_CALLBACK,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="↩️ Скасувати",
+                callback_data=CATALOG_CLEAR_CANCEL_CALLBACK,
+            )
+        ],
+    ])

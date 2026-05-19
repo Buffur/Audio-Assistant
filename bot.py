@@ -224,7 +224,6 @@ ROUTERS_ORDER = [
     ("handlers.settings", True),
     ("handlers.usage", False),
     ("handlers.privacy", False),
-    ("handlers.history", False),
     ("handlers.catalog", False),
     ("handlers.reading_callbacks", False),
 

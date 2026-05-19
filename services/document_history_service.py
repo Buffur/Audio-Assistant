@@ -13,6 +13,7 @@ from database.db import (
     get_user_document_by_id,
     get_user_document_history,
     set_document_summary,
+    set_document_summary_audio,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,28 @@ def deserialize_chunks(chunks_json: str | None) -> list[str]:
         return []
 
     return [str(chunk) for chunk in chunks if str(chunk).strip()]
+
+
+def serialize_voice_file_ids(file_ids: list[str]) -> str:
+    return json.dumps(file_ids, ensure_ascii=False)
+
+
+def deserialize_voice_file_ids(file_ids_json: str | None) -> list[str]:
+    if not file_ids_json:
+        return []
+
+    try:
+        file_ids = json.loads(file_ids_json)
+    except json.JSONDecodeError:
+        logger.exception(
+            "DocumentHistory: не вдалося прочитати summary voice file_ids"
+        )
+        return []
+
+    if not isinstance(file_ids, list):
+        return []
+
+    return [str(file_id) for file_id in file_ids if str(file_id).strip()]
 
 
 async def save_document_history_from_message(
@@ -192,6 +215,44 @@ async def save_catalog_document_summary(
     except Exception:
         logger.exception(
             "DocumentCatalog: не вдалося зберегти summary user_id=%s document_id=%s",
+            user_id,
+            document_id,
+        )
+        return False
+
+
+async def save_catalog_document_summary_audio(
+    user_id: int,
+    document_id: int | None,
+    voice_file_ids: list[str],
+    voice: str,
+    rate: str,
+    provider: str,
+) -> bool:
+    if document_id is None:
+        return False
+
+    voice_file_ids = [
+        str(file_id).strip()
+        for file_id in voice_file_ids
+        if str(file_id).strip()
+    ]
+
+    if not voice_file_ids:
+        return False
+
+    try:
+        return await set_document_summary_audio(
+            user_id=user_id,
+            document_id=document_id,
+            voice_file_ids_json=serialize_voice_file_ids(voice_file_ids),
+            voice=voice,
+            rate=rate,
+            provider=provider,
+        )
+    except Exception:
+        logger.exception(
+            "DocumentCatalog: не вдалося зберегти summary audio user_id=%s document_id=%s",
             user_id,
             document_id,
         )

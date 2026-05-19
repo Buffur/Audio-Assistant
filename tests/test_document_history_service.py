@@ -55,6 +55,16 @@ def test_chunks_serialization_roundtrip() -> None:
     assert service.deserialize_chunks(serialized) == chunks
 
 
+def test_voice_file_ids_serialization_roundtrip() -> None:
+    file_ids = ["voice-1", "voice-2"]
+
+    serialized = service.serialize_voice_file_ids(file_ids)
+
+    assert service.deserialize_voice_file_ids(serialized) == file_ids
+    assert service.deserialize_voice_file_ids(None) == []
+    assert service.deserialize_voice_file_ids("{not json") == []
+
+
 def test_deserialize_chunks_handles_bad_payloads() -> None:
     assert service.deserialize_chunks(None) == []
     assert service.deserialize_chunks("") == []
@@ -134,3 +144,53 @@ async def test_save_catalog_document_summary(monkeypatch) -> None:
         text="hello",
         chunks=[],
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_save_catalog_document_summary_audio(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_set_document_summary_audio(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        service,
+        "set_document_summary_audio",
+        fake_set_document_summary_audio,
+    )
+
+    assert await service.save_catalog_document_summary_audio(
+        user_id=1,
+        document_id=2,
+        voice_file_ids=[" voice-id "],
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        provider="edge",
+    ) is True
+
+    assert captured == {
+        "user_id": 1,
+        "document_id": 2,
+        "voice_file_ids_json": '["voice-id"]',
+        "voice": "uk-UA-PolinaNeural",
+        "rate": "+0%",
+        "provider": "edge",
+    }
+
+    assert await service.save_catalog_document_summary_audio(
+        user_id=1,
+        document_id=None,
+        voice_file_ids=["voice-id"],
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        provider="edge",
+    ) is False
+    assert await service.save_catalog_document_summary_audio(
+        user_id=1,
+        document_id=2,
+        voice_file_ids=[],
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        provider="edge",
+    ) is False

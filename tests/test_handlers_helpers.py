@@ -317,6 +317,10 @@ def test_catalog_reading_session_restores_cached_summary() -> None:
         document={
             "id": 42,
             "summary_text": "Cached summary",
+            "summary_voice_file_ids_json": '["voice-file-id"]',
+            "summary_voice_voice": "uk-UA-PolinaNeural",
+            "summary_voice_rate": "+0%",
+            "summary_voice_provider": "edge",
         },
         chunks=["one", "two"],
     )
@@ -325,6 +329,8 @@ def test_catalog_reading_session_restores_cached_summary() -> None:
     assert session["chunks"] == ["one", "two"]
     assert session["summary_text"] == "Cached summary"
     assert session["summary_delivered"] is False
+    assert session["summary_voice_file_ids"] == ["voice-file-id"]
+    assert session["summary_voice_voice"] == "uk-UA-PolinaNeural"
 
 
 def test_messages_limit_extracted_text() -> None:

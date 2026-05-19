@@ -9,6 +9,11 @@ EMPTY_CATALOG_TEXT = (
 )
 
 CATALOG_CLEARED_TEXT = "🧹 Каталог документів очищено."
+CATALOG_CLEAR_CONFIRM_TEXT = (
+    "Очистити весь каталог документів?\n\n"
+    "Цю дію не можна скасувати."
+)
+CATALOG_CLEAR_CANCELLED_TEXT = "Очищення каталогу скасовано."
 
 CATALOG_DOCUMENT_NOT_FOUND_TEXT = (
     "❌ Документ не знайдено. Можливо, він був видалений."
@@ -21,6 +26,10 @@ CATALOG_DOCUMENT_WITHOUT_CHUNKS_TEXT = (
 )
 
 CATALOG_DOCUMENT_DELETED_TEXT = "🗑 Документ видалено з каталогу."
+CATALOG_DELETE_CONFIRM_TEXT = (
+    "Видалити цей документ з каталогу?\n\n"
+    "Цю дію не можна скасувати."
+)
 
 CATALOG_OPENING_TEXT = "⏳ Відкриваю документ з каталогу..."
 
