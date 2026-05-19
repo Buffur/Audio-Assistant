@@ -5,6 +5,36 @@ import pytest
 from services import telemetry_service
 
 
+def test_telemetry_estimates_nested_payload_units() -> None:
+    payload = {
+        "text": "hello",
+        "parts": [
+            b"abc",
+            {
+                "nested": "world",
+            },
+        ],
+    }
+
+    assert telemetry_service.estimate_payload_units(payload) == 13
+
+
+def test_telemetry_stream_fields_stringify_none_and_booleans() -> None:
+    fields = telemetry_service._metric_stream_fields({
+        "provider": "gemini",
+        "success": False,
+        "error_message": None,
+        "latency_ms": 123,
+    })
+
+    assert fields == {
+        "provider": "gemini",
+        "success": "False",
+        "error_message": "",
+        "latency_ms": "123",
+    }
+
+
 @pytest.mark.asyncio
 async def test_record_service_metric_enqueues_and_flushes(monkeypatch) -> None:
     await telemetry_service.close_telemetry_service(timeout_seconds=0.1)

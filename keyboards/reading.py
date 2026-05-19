@@ -8,6 +8,7 @@ READ_STOP_ACTION = "read_stop"
 READ_EXPORT_AUDIO_ACTION = "read_export_audio"
 
 CALLBACK_SEPARATOR = ":"
+SUMMARY_BUTTON_TEXT = "📝 Короткий зміст файлу"
 
 
 def build_reading_callback(action: str, session_id: str) -> str:
@@ -42,6 +43,7 @@ def reading_navigation_keyboard(
     has_next: bool,
     session_id: str,
     can_export_audio: bool = False,
+    show_summary_button: bool = True,
 ) -> InlineKeyboardMarkup:
     """
     Клавіатура для навігації під час читання основного тексту.
@@ -73,14 +75,20 @@ def reading_navigation_keyboard(
             )
         ])
 
-    keyboard.append([
-        InlineKeyboardButton(
-            text="📝 Короткий зміст",
-            callback_data=build_reading_callback(
-                READ_SUMMARY_ACTION,
-                session_id
+    action_row = []
+
+    if show_summary_button:
+        action_row.append(
+            InlineKeyboardButton(
+                text=SUMMARY_BUTTON_TEXT,
+                callback_data=build_reading_callback(
+                    READ_SUMMARY_ACTION,
+                    session_id
+                )
             )
-        ),
+        )
+
+    action_row.append(
         InlineKeyboardButton(
             text="⏹ Закінчити",
             callback_data=build_reading_callback(
@@ -88,7 +96,9 @@ def reading_navigation_keyboard(
                 session_id
             )
         ),
-    ])
+    )
+
+    keyboard.append(action_row)
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -96,6 +106,7 @@ def reading_navigation_keyboard(
 def summary_only_keyboard(
     session_id: str,
     can_export_audio: bool = False,
+    show_summary_button: bool = True,
 ) -> InlineKeyboardMarkup:
     """
     Клавіатура для попередніх voice-повідомлень.
@@ -116,24 +127,32 @@ def summary_only_keyboard(
             )
         ])
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        *export_rows,
-        [
+    action_row = []
+
+    if show_summary_button:
+        action_row.append(
             InlineKeyboardButton(
-                text="📝 Короткий зміст",
+                text=SUMMARY_BUTTON_TEXT,
                 callback_data=build_reading_callback(
                     READ_SUMMARY_ACTION,
                     session_id
                 )
-            ),
-            InlineKeyboardButton(
-                text="⏹ Закінчити",
-                callback_data=build_reading_callback(
-                    READ_STOP_ACTION,
-                    session_id
-                )
-            ),
-        ]
+            )
+        )
+
+    action_row.append(
+        InlineKeyboardButton(
+            text="⏹ Закінчити",
+            callback_data=build_reading_callback(
+                READ_STOP_ACTION,
+                session_id
+            )
+        )
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        *export_rows,
+        action_row,
     ])
 
 

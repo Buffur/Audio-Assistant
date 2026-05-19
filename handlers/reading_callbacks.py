@@ -27,6 +27,7 @@ from services.reading_session_store import (
     get_reading_session,
     has_reading_session,
     try_start_generation,
+    update_reading_session,
 )
 from services.tts import generate_voice
 from services.usage_limits_service import (
@@ -50,16 +51,21 @@ from texts.messages import (
     SESSION_NOT_FOUND_OR_FINISHED_TEXT,
     SESSION_NOT_FOUND_TEXT,
     SUMMARY_AUDIO_GENERATION_ERROR,
+    SUMMARY_ALREADY_READY_TEXT,
+    SUMMARY_ALREADY_SENT_TEXT,
+    SUMMARY_CACHED_TEXT_HEADER,
     SUMMARY_CAPTION_TEXT,
     SUMMARY_GENERATION_ERROR,
     SUMMARY_PREPARING_TEXT,
     WAIT_AUDIO_PROCESSING_TEXT,
     WAIT_PROCESSING_TEXT,
 )
+from utils.splitter import split_text
 from utils.text_checks import is_error_text
 
 router = Router()
 logger = logging.getLogger(__name__)
+CACHED_SUMMARY_MESSAGE_MAX_LENGTH = 3500
 
 
 def _is_matching_session(
@@ -96,6 +102,50 @@ async def _safe_edit_reply_markup(
         )
 
 
+def _get_cached_summary_text(session: dict) -> str | None:
+    summary_text = session.get("summary_text")
+
+    if not isinstance(summary_text, str):
+        return None
+
+    summary_text = summary_text.strip()
+
+    return summary_text or None
+
+
+async def _send_cached_summary(
+    callback: types.CallbackQuery,
+    summary_text: str,
+    already_delivered: bool,
+) -> None:
+    if not callback.message:
+        await callback.answer(
+            (
+                SUMMARY_ALREADY_SENT_TEXT
+                if already_delivered
+                else SUMMARY_ALREADY_READY_TEXT
+            ),
+            show_alert=True,
+        )
+        return
+
+    await _safe_edit_reply_markup(callback, reply_markup=None)
+
+    if already_delivered:
+        await callback.answer(SUMMARY_ALREADY_SENT_TEXT, show_alert=True)
+        return
+
+    await callback.answer(SUMMARY_ALREADY_READY_TEXT)
+
+    cached_text = f"{SUMMARY_CACHED_TEXT_HEADER}\n\n{summary_text}"
+
+    for message_text in split_text(
+        cached_text,
+        max_length=CACHED_SUMMARY_MESSAGE_MAX_LENGTH,
+    ):
+        await callback.message.answer(message_text)
+
+
 @router.callback_query(F.data.startswith(READ_NEXT_ACTION))
 async def process_read_next(callback: types.CallbackQuery) -> None:
     """
@@ -120,6 +170,8 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
         )
         return
 
+    show_summary_button = _get_cached_summary_text(session) is None
+
     if not await try_start_generation(user_id):
         await callback.answer(
             WAIT_AUDIO_PROCESSING_TEXT,
@@ -135,6 +187,7 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
             reply_markup=summary_only_keyboard(
                 callback_session_id,
                 can_export_audio=await is_premium_user(user_id),
+                show_summary_button=show_summary_button,
             ),
         )
     else:
@@ -185,6 +238,16 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         await callback.answer(
             OUTDATED_READING_BUTTON_TEXT,
             show_alert=True,
+        )
+        return
+
+    cached_summary_text = _get_cached_summary_text(session)
+
+    if cached_summary_text:
+        await _send_cached_summary(
+            callback,
+            cached_summary_text,
+            already_delivered=bool(session.get("summary_delivered")),
         )
         return
 
@@ -256,6 +319,14 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             )
             return
 
+        await update_reading_session(
+            user_id,
+            summary_text=summary_text,
+            summary_delivered=False,
+        )
+        session["summary_text"] = summary_text
+        session["summary_delivered"] = False
+
         voice_pref, rate = await get_effective_user_settings(user_id)
         tts_provider = await get_effective_user_tts_provider(user_id)
         voice = select_voice_for_text(summary_text, voice_pref)
@@ -301,6 +372,9 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             caption=SUMMARY_CAPTION_TEXT,
             reply_markup=keyboard,
         )
+
+        await update_reading_session(user_id, summary_delivered=True)
+        session["summary_delivered"] = True
 
         await safe_delete_message(status_msg)
 

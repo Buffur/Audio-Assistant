@@ -39,6 +39,7 @@ from services.user_settings_service import (
 from services.voice_selector import select_voice_for_text
 from services.voice_sender import safe_remove_file, send_voice_files
 from texts.messages import (
+    ALL_PARTS_SENT_AFTER_SUMMARY_TEXT,
     ALL_PARTS_SENT_TEXT,
     AUDIO_QUEUE_FULL_TEXT,
     BACKGROUND_GENERATION_ERROR,
@@ -1039,6 +1040,7 @@ async def _send_audio_chunk_now(
 
         new_index = index + 1
         has_next = new_index < len(chunks)
+        summary_already_generated = bool(current_session.get("summary_text"))
 
         await update_reading_session(
             user_id,
@@ -1053,6 +1055,7 @@ async def _send_audio_chunk_now(
             has_next=has_next,
             session_id=current_session_id,
             can_export_audio=can_export_audio,
+            show_summary_button=not summary_already_generated,
         )
         part_caption = build_part_caption(index + 1, len(chunks))
 
@@ -1072,7 +1075,11 @@ async def _send_audio_chunk_now(
         )
 
         if not has_next:
-            await message.answer(ALL_PARTS_SENT_TEXT)
+            await message.answer(
+                ALL_PARTS_SENT_AFTER_SUMMARY_TEXT
+                if summary_already_generated
+                else ALL_PARTS_SENT_TEXT
+            )
             return
 
         await _start_prefetch_next_chunk(

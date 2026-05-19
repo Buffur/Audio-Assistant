@@ -129,6 +129,36 @@ def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
     assert export_callback in premium_callbacks
 
 
+def test_reading_keyboard_can_hide_summary_button_after_summary_generated() -> None:
+    navigation_keyboard = reading_keyboard.reading_navigation_keyboard(
+        has_next=True,
+        session_id="session-1",
+        show_summary_button=False,
+    )
+    previous_voice_keyboard = reading_keyboard.summary_only_keyboard(
+        session_id="session-1",
+        show_summary_button=False,
+    )
+
+    callbacks = [
+        button.callback_data
+        for keyboard in (navigation_keyboard, previous_voice_keyboard)
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    summary_callback = reading_keyboard.build_reading_callback(
+        reading_keyboard.READ_SUMMARY_ACTION,
+        "session-1",
+    )
+    stop_callback = reading_keyboard.build_reading_callback(
+        reading_keyboard.READ_STOP_ACTION,
+        "session-1",
+    )
+
+    assert summary_callback not in callbacks
+    assert stop_callback in callbacks
+
+
 def test_settings_keyboard_does_not_show_tts_provider_choice() -> None:
     keyboard = settings_keyboard.settings_keyboard()
     callbacks = [
