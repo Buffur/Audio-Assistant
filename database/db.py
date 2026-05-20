@@ -1023,10 +1023,8 @@ async def delete_user_private_data(user_id: int) -> dict[str, int]:
             "DELETE FROM document_history WHERE user_id = ?",
             (user_id,),
         )
-        usage_cursor = await db.execute(
-            "DELETE FROM usage_daily WHERE user_id = ?",
-            (user_id,),
-        )
+        # Usage counters are intentionally retained: deleting them here would
+        # let users bypass daily quota limits by repeatedly calling /delete_my_data.
         user_cursor = await db.execute(
             """
             UPDATE users
@@ -1045,7 +1043,6 @@ async def delete_user_private_data(user_id: int) -> dict[str, int]:
 
     return {
         "document_history": int(document_cursor.rowcount or 0),
-        "usage_daily": int(usage_cursor.rowcount or 0),
         "user_settings": int(user_cursor.rowcount or 0),
     }
 

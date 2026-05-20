@@ -422,6 +422,8 @@ def test_delete_my_data_confirmation_keyboard_and_text() -> None:
     assert privacy_keyboard.parse_delete_my_data_callback_user_id(cancel_callback) == 123
     assert "Підтвердьте очищення даних" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
     assert "історію документів" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
+    assert "Денні лічильники використання" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
+    assert "не видаляються" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
 
 
 def test_catalog_reading_session_restores_cached_summary() -> None:

@@ -355,10 +355,11 @@ async def test_retention_and_delete_user_private_data(workspace_tmp_path, monkey
 
     assert result == {
         "document_history": 1,
-        "usage_daily": 1,
         "user_settings": 1,
     }
     assert await db_module.count_user_document_history(1) == 0
+    usage_after_delete = await db_module.get_daily_usage(1, "2026-05-15")
+    assert usage_after_delete["text_messages_processed"] == 1
     assert await db_module.get_user_settings(1) == (None, None)
     assert await db_module.get_user_tts_provider(1) is None
     assert await db_module.is_user_banned(1) is True
