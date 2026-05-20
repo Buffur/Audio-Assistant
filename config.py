@@ -30,8 +30,11 @@ class Settings(BaseSettings):
     GEMINI_TEXT_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_TEXT_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "gemini-2.5-flash",
+            "gemini-3.5-flash",
             "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
         ]
     )
@@ -51,8 +54,11 @@ class Settings(BaseSettings):
     GEMINI_OCR_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_OCR_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "gemini-2.5-flash",
+            "gemini-3.5-flash",
             "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
         ]
     )

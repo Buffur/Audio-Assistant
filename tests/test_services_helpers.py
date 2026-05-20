@@ -253,6 +253,41 @@ async def test_summary_prompt_asks_ai_to_keep_input_language(monkeypatch) -> Non
     assert "відповідай тією самою мовою" in captured["prompt"]
 
 
+@pytest.mark.asyncio
+async def test_large_summary_uses_part_summaries_before_final_summary(
+    monkeypatch,
+) -> None:
+    prompts = []
+
+    async def fake_generate_ai_text(prompt, temperature):
+        prompts.append(prompt)
+
+        if "КОРОТКІ ЗМІСТИ ЧАСТИН" in prompt:
+            return "final summary"
+
+        return f"partial summary {len(prompts)}"
+
+    monkeypatch.setattr(parser, "_generate_ai_text", fake_generate_ai_text)
+    monkeypatch.setattr(
+        parser,
+        "split_text",
+        lambda text, max_length: [
+            "first part " * 10,
+            "second part " * 10,
+            "third part " * 10,
+        ],
+    )
+
+    result = await parser.summarize_text_with_ai("large source text " * 4000)
+
+    assert result == "final summary"
+    assert len(prompts) == 4
+    assert "Це частина 1 з 3" in prompts[0]
+    assert "Це частина 3 з 3" in prompts[2]
+    assert "partial summary 1" in prompts[3]
+    assert "partial summary 3" in prompts[3]
+
+
 def test_parser_content_type_helper() -> None:
     assert parser._is_supported_content_type("text/html; charset=utf-8") is True
     assert parser._is_supported_content_type("application/json") is False

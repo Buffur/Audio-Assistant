@@ -113,3 +113,55 @@ async def test_redis_audio_queue_pushes_serialized_jobs_and_enforces_max_size(
             "chat_id": 100,
             "session_id": "redis-session-2",
         })
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_redis_audio_queue_purge_removes_only_target_user_jobs(
+    redis_test_client,
+    monkeypatch,
+) -> None:
+    queue_key = "test:reading:audio:queue:purge"
+
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_REDIS_KEY", queue_key)
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_MAX_SIZE", 10)
+    monkeypatch.setattr(
+        reading_service,
+        "_ensure_redis_audio_generation_worker",
+        lambda: None,
+    )
+
+    await reading_service._enqueue_redis_audio_job({
+        "type": "send_chunk",
+        "user_id": 1,
+        "chat_id": 100,
+        "session_id": "user-1-a",
+    })
+    await reading_service._enqueue_redis_audio_job({
+        "type": "export_audio",
+        "user_id": 2,
+        "chat_id": 200,
+        "session_id": "user-2",
+    })
+    await reading_service._enqueue_redis_audio_job({
+        "type": "send_chunk",
+        "user_id": 1,
+        "chat_id": 100,
+        "session_id": "user-1-b",
+    })
+    await redis_test_client.rpush(queue_key, "not-json")
+
+    removed_count = await reading_service.purge_queued_audio_jobs_for_user(1)
+
+    remaining_raw_jobs = await redis_test_client.lrange(queue_key, 0, -1)
+    remaining_jobs = [
+        json.loads(raw_job)
+        for raw_job in remaining_raw_jobs
+        if raw_job != "not-json"
+    ]
+
+    assert removed_count == 2
+    assert len(remaining_raw_jobs) == 2
+    assert remaining_jobs[0]["user_id"] == 2
+    assert remaining_raw_jobs[-1] == "not-json"

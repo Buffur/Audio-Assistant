@@ -406,15 +406,20 @@ def test_catalog_page_callbacks_and_text() -> None:
 
 
 def test_delete_my_data_confirmation_keyboard_and_text() -> None:
-    keyboard = privacy_keyboard.delete_my_data_confirmation_keyboard()
+    keyboard = privacy_keyboard.delete_my_data_confirmation_keyboard(user_id=123)
     callbacks = [
         button.callback_data
         for row in keyboard.inline_keyboard
         for button in row
     ]
 
-    assert privacy_keyboard.DELETE_MY_DATA_CONFIRM_CALLBACK in callbacks
-    assert privacy_keyboard.DELETE_MY_DATA_CANCEL_CALLBACK in callbacks
+    confirm_callback = privacy_keyboard.build_delete_my_data_confirm_callback(123)
+    cancel_callback = privacy_keyboard.build_delete_my_data_cancel_callback(123)
+
+    assert confirm_callback in callbacks
+    assert cancel_callback in callbacks
+    assert privacy_keyboard.parse_delete_my_data_callback_user_id(confirm_callback) == 123
+    assert privacy_keyboard.parse_delete_my_data_callback_user_id(cancel_callback) == 123
     assert "Підтвердьте очищення даних" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
     assert "історію документів" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
 

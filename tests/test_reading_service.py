@@ -40,9 +40,11 @@ class FakeMessage:
 async def cleanup_reading_state():
     await reading_service.close_reading_audio_queue(timeout_seconds=0.1)
     await store.cleanup_all_reading_sessions()
+    reading_service._privacy_delete_markers.clear()
     yield
     await reading_service.close_reading_audio_queue(timeout_seconds=0.1)
     await store.cleanup_all_reading_sessions()
+    reading_service._privacy_delete_markers.clear()
 
 
 @pytest.mark.asyncio
@@ -54,6 +56,7 @@ async def test_send_audio_chunk_enqueues_background_job(monkeypatch) -> None:
         user_id,
         expected_session_id,
         status_msg,
+        job_created_at=None,
     ) -> None:
         captured.update(
             {
@@ -61,6 +64,7 @@ async def test_send_audio_chunk_enqueues_background_job(monkeypatch) -> None:
                 "user_id": user_id,
                 "expected_session_id": expected_session_id,
                 "status_msg": status_msg,
+                "job_created_at": job_created_at,
             }
         )
 
@@ -88,6 +92,7 @@ async def test_send_audio_chunk_enqueues_background_job(monkeypatch) -> None:
     assert captured["user_id"] == 1
     assert captured["expected_session_id"] == "session-1"
     assert captured["status_msg"] in message.status_messages
+    assert isinstance(captured["job_created_at"], float)
     assert message.answers
 
 
@@ -126,6 +131,7 @@ async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) ->
 
     await reading_service.send_audio_chunk(message, user_id=1)
 
+    assert captured.pop("created_at") > 0
     assert captured == {
         "type": "send_chunk",
         "user_id": 1,
@@ -192,6 +198,7 @@ async def test_export_reading_audio_enqueues_background_job(monkeypatch) -> None
         user_id,
         expected_session_id,
         status_msg,
+        job_created_at=None,
     ) -> None:
         captured.update(
             {
@@ -199,6 +206,7 @@ async def test_export_reading_audio_enqueues_background_job(monkeypatch) -> None
                 "user_id": user_id,
                 "expected_session_id": expected_session_id,
                 "status_msg": status_msg,
+                "job_created_at": job_created_at,
             }
         )
 
@@ -226,6 +234,7 @@ async def test_export_reading_audio_enqueues_background_job(monkeypatch) -> None
     assert captured["user_id"] == 1
     assert captured["expected_session_id"] == "session-1"
     assert captured["status_msg"] in message.status_messages
+    assert isinstance(captured["job_created_at"], float)
     assert message.answers
 
 
@@ -379,3 +388,59 @@ async def test_send_audio_chunk_keeps_summary_button_for_cached_catalog_summary(
     assert captured["reply_markup"] is None
     assert any(callback.startswith(READ_SUMMARY_ACTION) for callback in callbacks)
     assert message.answers == [reading_service.ALL_PARTS_SENT_TEXT]
+
+
+@pytest.mark.asyncio
+async def test_privacy_delete_marker_skips_jobs_created_before_deletion() -> None:
+    user_id = 77
+
+    await reading_service.mark_user_data_deletion(user_id)
+
+    deleted_at = await reading_service._get_user_data_deletion_timestamp(user_id)
+
+    assert deleted_at is not None
+    assert await reading_service._should_skip_deleted_user_job(
+        user_id,
+        deleted_at - 0.01,
+    )
+    assert not await reading_service._should_skip_deleted_user_job(
+        user_id,
+        deleted_at + 0.01,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_user_private_runtime_data_clears_session_queue_and_cache(
+    monkeypatch,
+) -> None:
+    async def fake_purge_queued_audio_jobs_for_user(user_id: int) -> int:
+        assert user_id == 88
+        return 2
+
+    def fake_clear_audio_cache() -> dict[str, int]:
+        return {"removed_files": 3, "removed_bytes": 4096}
+
+    monkeypatch.setattr(
+        reading_service,
+        "purge_queued_audio_jobs_for_user",
+        fake_purge_queued_audio_jobs_for_user,
+    )
+    monkeypatch.setattr(reading_service, "clear_audio_cache", fake_clear_audio_cache)
+
+    await store.set_reading_session(
+        user_id=88,
+        session={
+            "session_id": "private-session",
+            "chunks": ["one"],
+            "index": 0,
+        },
+    )
+
+    result = await reading_service.cleanup_user_private_runtime_data(88)
+
+    assert result == {
+        "reading_session": 1,
+        "queued_audio_jobs": 2,
+        "audio_cache_files": 3,
+    }
+    assert await store.get_reading_session(88) is None

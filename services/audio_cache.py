@@ -195,6 +195,40 @@ def cleanup_audio_cache(now: float | None = None) -> dict[str, int]:
     return result
 
 
+def clear_audio_cache() -> dict[str, int]:
+    """
+    Повністю очищає shared audio cache.
+
+    Кеш не має user ownership index: ключ побудований із text/voice/rate,
+    тому для privacy-delete безпечніший варіант — прибрати всі cached OGG.
+    """
+    result = {
+        "removed_files": 0,
+        "removed_bytes": 0,
+    }
+
+    if not is_audio_cache_enabled():
+        return result
+
+    cache_dir = _get_cache_dir()
+
+    for file_path in cache_dir.glob("*.ogg"):
+        removed_bytes = _remove_cache_file(file_path)
+
+        if removed_bytes:
+            result["removed_files"] += 1
+            result["removed_bytes"] += removed_bytes
+
+    if result["removed_files"]:
+        logger.info(
+            "AudioCache: full clear removed_files=%s removed_bytes=%s",
+            result["removed_files"],
+            result["removed_bytes"],
+        )
+
+    return result
+
+
 def maybe_cleanup_audio_cache(now: float | None = None) -> dict[str, int] | None:
     global _last_cleanup_time
 

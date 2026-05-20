@@ -19,6 +19,7 @@ from keyboards.catalog import (
     catalog_clear_confirmation_keyboard,
     catalog_keyboard,
     catalog_delete_confirmation_keyboard,
+    parse_catalog_callback_user_id,
     parse_catalog_page,
     parse_catalog_document_id,
 )
@@ -57,6 +58,16 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 CATALOG_PAGE_SIZE = DEFAULT_HISTORY_LIMIT
+CALLBACK_OWNER_MISMATCH_TEXT = "Ця кнопка належить іншому користувачу."
+
+
+def _callback_owner_matches(
+    callback: types.CallbackQuery,
+    prefix: str,
+) -> bool:
+    owner_id = parse_catalog_callback_user_id(callback.data, prefix)
+
+    return owner_id is None or owner_id == callback.from_user.id
 
 
 def _generate_session_id() -> str:
@@ -140,6 +151,7 @@ async def _send_catalog(message: Message, user_id: int, page: int = 0) -> None:
         page=page,
         total_pages=total_pages,
         page_size=CATALOG_PAGE_SIZE,
+        user_id=user_id,
     )
 
     await message.answer(
@@ -175,6 +187,7 @@ async def _refresh_catalog_message(
         page=page,
         total_pages=total_pages,
         page_size=CATALOG_PAGE_SIZE,
+        user_id=user_id,
     )
 
     try:
@@ -228,15 +241,21 @@ async def catalog_clear_handler(message: Message) -> None:
     """
     Просить підтвердження перед очищенням каталогу матеріалів користувача.
     """
+    user_id = message.from_user.id
+
     await message.answer(
         CATALOG_CLEAR_CONFIRM_TEXT,
-        reply_markup=catalog_clear_confirmation_keyboard(),
+        reply_markup=catalog_clear_confirmation_keyboard(user_id),
     )
 
 
-@router.callback_query(F.data == CATALOG_CLEAR_CONFIRM_CALLBACK)
+@router.callback_query(F.data.startswith(CATALOG_CLEAR_CONFIRM_CALLBACK))
 async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
+
+    if not _callback_owner_matches(callback, CATALOG_CLEAR_CONFIRM_CALLBACK):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
 
     await clear_document_history(user_id=user_id)
 
@@ -246,8 +265,12 @@ async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
     await callback.answer(CATALOG_CLEARED_TEXT)
 
 
-@router.callback_query(F.data == CATALOG_CLEAR_CANCEL_CALLBACK)
+@router.callback_query(F.data.startswith(CATALOG_CLEAR_CANCEL_CALLBACK))
 async def catalog_clear_cancel_callback(callback: types.CallbackQuery) -> None:
+    if not _callback_owner_matches(callback, CATALOG_CLEAR_CANCEL_CALLBACK):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
     if callback.message:
         await callback.message.edit_text(CATALOG_CLEAR_CANCELLED_TEXT)
 
@@ -335,6 +358,10 @@ async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None
     """
     Показує підтвердження перед видаленням документа.
     """
+    if not _callback_owner_matches(callback, CATALOG_DELETE_CONFIRM_PREFIX):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
     document_id = parse_catalog_document_id(
         callback_data=callback.data,
         prefix=CATALOG_DELETE_CONFIRM_PREFIX,
@@ -351,6 +378,7 @@ async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None
         reply_markup=catalog_delete_confirmation_keyboard(
             document_id=document_id,
             page=page,
+            user_id=callback.from_user.id,
         ),
     )
     await callback.answer()
@@ -361,6 +389,10 @@ async def cancel_catalog_document_delete(callback: types.CallbackQuery) -> None:
     """
     Повертає каталог після скасування видалення.
     """
+    if not _callback_owner_matches(callback, CATALOG_DELETE_CANCEL_PREFIX):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
     user_id = callback.from_user.id
     page = parse_catalog_page(callback.data, CATALOG_DELETE_CANCEL_PREFIX) or 0
 
@@ -377,6 +409,10 @@ async def delete_catalog_document_handler(callback: types.CallbackQuery) -> None
     """
     Видаляє конкретний документ із каталогу і оновлює список.
     """
+    if not _callback_owner_matches(callback, CATALOG_DELETE_PREFIX):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
     user_id = callback.from_user.id
 
     document_id = parse_catalog_document_id(

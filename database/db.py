@@ -624,6 +624,31 @@ async def increment_daily_usage(
         await db.commit()
 
 
+async def decrement_daily_usage(
+    user_id: int,
+    usage_date: str,
+    field_name: str,
+    amount: int = 1,
+) -> None:
+    if field_name not in ALLOWED_USAGE_FIELDS:
+        raise ValueError(f"Unsupported usage field: {field_name}")
+
+    if amount <= 0:
+        raise ValueError("Usage decrement amount must be greater than 0")
+
+    async with get_db_connection() as db:
+        await _ensure_usage_row(db, user_id, usage_date)
+        await db.execute(
+            f"""
+            UPDATE usage_daily
+            SET {field_name} = MAX({field_name} - ?, 0)
+            WHERE user_id = ? AND usage_date = ?
+            """,
+            (amount, user_id, usage_date),
+        )
+        await db.commit()
+
+
 async def reset_daily_usage(
     user_id: int,
     usage_date: str,

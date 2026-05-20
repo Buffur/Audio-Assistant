@@ -117,6 +117,25 @@ async def test_reserve_input_processing_records_premium_usage(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_refund_input_processing_decrements_reserved_usage(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_decrement_daily_usage(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(service, "_today_key", lambda: "2026-05-20")
+    monkeypatch.setattr(service, "decrement_daily_usage", fake_decrement_daily_usage)
+
+    await service.refund_input_processing(123, service.USAGE_TYPE_FILE)
+
+    assert captured == {
+        "user_id": 123,
+        "usage_date": "2026-05-20",
+        "field_name": service.USAGE_FIELD_FILES,
+    }
+
+
+@pytest.mark.asyncio
 async def test_reset_user_daily_limits_uses_today_key(monkeypatch) -> None:
     captured = {}
 

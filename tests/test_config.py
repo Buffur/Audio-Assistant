@@ -232,6 +232,30 @@ def test_gemini_model_chains_parse_unique_values() -> None:
     assert settings.GEMINI_TTS_MODEL_CHAIN == ["gemini-2.5-flash-preview-tts"]
 
 
+def test_default_gemini_model_chains_are_free_tier_fallbacks() -> None:
+    settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+    )
+
+    expected_text_and_ocr_chain = [
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ]
+
+    assert settings.GEMINI_TEXT_MODEL == "gemini-3.1-flash-lite"
+    assert settings.GEMINI_TEXT_MODEL_CHAIN == expected_text_and_ocr_chain
+    assert settings.GEMINI_OCR_MODEL == "gemini-3.1-flash-lite"
+    assert settings.GEMINI_OCR_MODEL_CHAIN == expected_text_and_ocr_chain
+    assert settings.GEMINI_TTS_MODEL == "gemini-3.1-flash-tts-preview"
+    assert settings.GEMINI_TTS_MODEL_CHAIN == ["gemini-2.5-flash-preview-tts"]
+
+
 def test_ai_provider_chain_rejects_unknown_value() -> None:
     with pytest.raises(ValueError):
         Settings(

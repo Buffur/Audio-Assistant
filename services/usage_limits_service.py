@@ -13,6 +13,7 @@ from config import (
     FREE_DAILY_TEXT_MESSAGE_LIMIT,
 )
 from database.db import (
+    decrement_daily_usage,
     get_app_settings,
     get_daily_usage,
     get_user_plan_info,
@@ -329,6 +330,23 @@ async def record_input_processed(
     usage_type: str,
 ) -> None:
     await increment_daily_usage(
+        user_id=user_id,
+        usage_date=_today_key(),
+        field_name=_usage_field_for_type(usage_type),
+    )
+
+
+async def refund_input_processing(
+    user_id: int,
+    usage_type: str,
+) -> None:
+    """
+    Повертає зарезервоване використання, якщо матеріал не був оброблений.
+
+    Це залишає early reservation перед важкою роботою, але не карає
+    користувача за непідтримуваний формат або збій витягування тексту.
+    """
+    await decrement_daily_usage(
         user_id=user_id,
         usage_date=_today_key(),
         field_name=_usage_field_for_type(usage_type),

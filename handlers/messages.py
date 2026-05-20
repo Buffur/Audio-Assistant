@@ -21,6 +21,7 @@ from services.reading_session_store import (
 )
 from services.usage_limits_service import (
     detect_input_usage_type,
+    refund_input_processing,
     reserve_input_processing,
 )
 from texts.limits import get_limit_reached_text
@@ -123,6 +124,17 @@ async def _handle_unsupported_message(
     await message.answer(UNSUPPORTED_MESSAGE_TEXT)
 
 
+async def _refund_reserved_input(user_id: int, usage_type: str) -> None:
+    try:
+        await refund_input_processing(user_id, usage_type)
+    except Exception:
+        logger.exception(
+            "Messages: failed to refund reserved usage user_id=%s usage_type=%s",
+            user_id,
+            usage_type,
+        )
+
+
 def _generate_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -159,6 +171,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
 
     if not text or not text.strip() or is_error_text(text):
         error_text = text if is_error_text(text) else GENERIC_TEXT_EXTRACT_ERROR
+        await _refund_reserved_input(user_id, usage_type)
 
         if error_text == SUPPORTED_FORMATS_ERROR:
             await safe_delete_message(status_msg)
@@ -182,6 +195,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
             "Messages: split_text повернув порожній список для user_id=%s",
             user_id,
         )
+        await _refund_reserved_input(user_id, usage_type)
         await reply_with_voice(
             message,
             user_id,

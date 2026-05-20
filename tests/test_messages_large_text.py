@@ -96,6 +96,7 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_unsupported_document_format_error_is_text_only(monkeypatch) -> None:
     message = FakeMessage()
+    captured = {}
 
     async def fake_reply_with_voice(*args, **kwargs):
         raise AssertionError("unsupported format error must not use TTS")
@@ -106,10 +107,21 @@ async def test_unsupported_document_format_error_is_text_only(monkeypatch) -> No
     async def fake_reserve_input_processing(user_id, usage_type):
         return True
 
+    async def fake_refund_input_processing(user_id, usage_type):
+        captured["refund"] = {
+            "user_id": user_id,
+            "usage_type": usage_type,
+        }
+
     monkeypatch.setattr(
         messages,
         "reserve_input_processing",
         fake_reserve_input_processing,
+    )
+    monkeypatch.setattr(
+        messages,
+        "refund_input_processing",
+        fake_refund_input_processing,
     )
     monkeypatch.setattr(
         messages,
@@ -130,6 +142,10 @@ async def test_unsupported_document_format_error_is_text_only(monkeypatch) -> No
         messages.SUPPORTED_FORMATS_ERROR,
     ]
     assert message.status_messages[0].deleted is True
+    assert captured["refund"] == {
+        "user_id": 123,
+        "usage_type": "text",
+    }
 
 
 @pytest.mark.asyncio

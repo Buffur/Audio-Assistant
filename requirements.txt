@@ -1,38 +1,38 @@
 # Файл: requirements.txt
 
 # Telegram bot framework
-aiogram
+aiogram==3.27.0
 
 # Async database and HTTP/API
-aiosqlite
-aiohttp
-fastapi
-uvicorn[standard]
+aiosqlite==0.22.1
+aiohttp==3.13.5
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
 
 # HTML parsing
-beautifulsoup4
+beautifulsoup4==4.14.3
 
 # Text-to-speech
-edge-tts
-piper-tts
+edge-tts==7.2.8
+piper-tts==1.4.2
 
 # Text language detection
-langdetect
+langdetect==1.0.9
 
 # Image processing and OCR-related support
-pillow
+pillow==12.2.0
 
 # PDF processing
-PyMuPDF
+PyMuPDF==1.27.2.3
 
 # DOCX processing
-python-docx
+python-docx==1.2.0
 
 # Google Gemini API
-google-genai
+google-genai==1.75.0
 
 # Cache / rate limit storage
-redis
+redis==7.4.0
 
 # Application settings and .env validation
-pydantic-settings
+pydantic-settings==2.14.1

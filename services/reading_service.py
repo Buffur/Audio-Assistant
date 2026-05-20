@@ -21,6 +21,8 @@ from config import (
     READING_AUDIO_QUEUE_BACKEND,
     READING_AUDIO_QUEUE_MAX_SIZE,
     READING_AUDIO_QUEUE_REDIS_KEY,
+    READING_SESSION_BACKEND,
+    READING_SESSION_TTL_SECONDS,
 )
 from keyboards.reading import reading_navigation_keyboard
 from services.reading_session_store import (
@@ -30,6 +32,7 @@ from services.reading_session_store import (
 )
 from services.redis_client import get_redis_client
 from services.tts import generate_voice
+from services.audio_cache import clear_audio_cache
 from services.usage_limits_service import is_premium_user
 from services.user_settings_service import (
     build_user_tts_provider_chain,
@@ -66,6 +69,8 @@ logger = logging.getLogger(__name__)
 READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = 10.0
 REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = 5
 REDIS_PREFETCH_WAIT_SECONDS = 3.0
+PRIVACY_DELETE_MARKER_PREFIX = "privacy:delete:"
+PRIVACY_DELETE_MARKER_TTL_SECONDS = max(READING_SESSION_TTL_SECONDS, 3600)
 
 AudioGenerationJob = Callable[[], Awaitable[None]]
 SerializedAudioJob = dict[str, object]
@@ -73,6 +78,7 @@ SerializedAudioJob = dict[str, object]
 _audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
 _audio_generation_worker_task: asyncio.Task | None = None
 _redis_audio_generation_worker_task: asyncio.Task | None = None
+_privacy_delete_markers: dict[int, float] = {}
 
 
 class _TelegramMessageProxy:
@@ -143,6 +149,146 @@ def _use_redis_audio_queue() -> bool:
     return READING_AUDIO_QUEUE_BACKEND == "redis"
 
 
+def _uses_redis_runtime_state() -> bool:
+    return _use_redis_audio_queue() or READING_SESSION_BACKEND == "redis"
+
+
+def _privacy_delete_marker_key(user_id: int) -> str:
+    return f"{PRIVACY_DELETE_MARKER_PREFIX}{user_id}"
+
+
+def _prune_memory_privacy_delete_markers(now: float | None = None) -> None:
+    current_time = now or time.time()
+    expired_user_ids = [
+        user_id
+        for user_id, marked_at in _privacy_delete_markers.items()
+        if current_time - marked_at > PRIVACY_DELETE_MARKER_TTL_SECONDS
+    ]
+
+    for user_id in expired_user_ids:
+        _privacy_delete_markers.pop(user_id, None)
+
+
+async def mark_user_data_deletion(user_id: int) -> None:
+    marked_at = time.time()
+    _prune_memory_privacy_delete_markers(now=marked_at)
+    _privacy_delete_markers[user_id] = marked_at
+
+    if not _uses_redis_runtime_state():
+        return
+
+    try:
+        client = await get_redis_client()
+        await client.setex(
+            _privacy_delete_marker_key(user_id),
+            PRIVACY_DELETE_MARKER_TTL_SECONDS,
+            str(marked_at),
+        )
+    except RedisError:
+        logger.exception(
+            "ReadingService: failed to write privacy deletion marker user_id=%s",
+            user_id,
+        )
+
+
+async def _get_user_data_deletion_timestamp(user_id: int) -> float | None:
+    _prune_memory_privacy_delete_markers()
+    memory_value = _privacy_delete_markers.get(user_id)
+
+    if not _uses_redis_runtime_state():
+        return memory_value
+
+    try:
+        client = await get_redis_client()
+        raw_value = await client.get(_privacy_delete_marker_key(user_id))
+    except RedisError:
+        logger.exception(
+            "ReadingService: failed to read privacy deletion marker user_id=%s",
+            user_id,
+        )
+        return memory_value
+
+    try:
+        redis_value = float(raw_value) if raw_value is not None else None
+    except (TypeError, ValueError):
+        redis_value = None
+
+    if memory_value is None:
+        return redis_value
+
+    if redis_value is None:
+        return memory_value
+
+    return max(memory_value, redis_value)
+
+
+async def _should_skip_deleted_user_job(
+    user_id: int,
+    job_created_at: float | None,
+) -> bool:
+    deleted_at = await _get_user_data_deletion_timestamp(user_id)
+
+    if deleted_at is None:
+        return False
+
+    return job_created_at is None or job_created_at <= deleted_at
+
+
+async def purge_queued_audio_jobs_for_user(user_id: int) -> int:
+    if not _use_redis_audio_queue():
+        return 0
+
+    try:
+        client = await get_redis_client()
+        removed_count = await client.eval(
+            """
+            local items = redis.call("LRANGE", KEYS[1], 0, -1)
+            local removed = 0
+
+            redis.call("DEL", KEYS[1])
+
+            for _, item in ipairs(items) do
+                local ok, job = pcall(cjson.decode, item)
+
+                if ok and tostring(job["user_id"]) == ARGV[1] then
+                    removed = removed + 1
+                else
+                    redis.call("RPUSH", KEYS[1], item)
+                end
+            end
+
+            return removed
+            """,
+            1,
+            READING_AUDIO_QUEUE_REDIS_KEY,
+            str(user_id),
+        )
+
+        return int(removed_count or 0)
+
+    except RedisError:
+        logger.exception(
+            "ReadingService: failed to purge queued audio jobs user_id=%s",
+            user_id,
+        )
+        return 0
+
+
+async def cleanup_user_private_runtime_data(user_id: int) -> dict[str, int]:
+    await mark_user_data_deletion(user_id)
+
+    session = await get_reading_session(user_id)
+    await cleanup_reading_session(user_id)
+    queued_audio_jobs = await purge_queued_audio_jobs_for_user(user_id)
+    audio_cache_result = clear_audio_cache()
+
+    return {
+        "reading_session": 1 if session else 0,
+        "queued_audio_jobs": queued_audio_jobs,
+        "audio_cache_files": audio_cache_result["removed_files"],
+    }
+
+
 def _message_chat_id(message: Message) -> int | None:
     chat = getattr(message, "chat", None)
     chat_id = getattr(chat, "id", None)
@@ -170,6 +316,7 @@ def _serialize_audio_job(job: SerializedAudioJob) -> str:
 
 async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
     user_id = int(job["user_id"])
+    job_created_at = float(job.get("created_at") or 0)
     expected_session_id = str(job["session_id"])
     chunk_index = int(job["chunk_index"])
     chunk_text = str(job["chunk_text"])
@@ -180,6 +327,9 @@ async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
         for provider in job.get("provider_chain", [])
         if str(provider).strip()
     ]
+
+    if await _should_skip_deleted_user_job(user_id, job_created_at):
+        return
 
     session = await get_reading_session(user_id)
 
@@ -209,6 +359,10 @@ async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
             _cleanup_audio_files(audio_files)
             return
 
+        if await _should_skip_deleted_user_job(user_id, job_created_at):
+            _cleanup_audio_files(audio_files)
+            return
+
         await update_reading_session(
             user_id,
             prefetch_state="ready",
@@ -224,6 +378,9 @@ async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
             user_id,
             chunk_index,
         )
+        if await _should_skip_deleted_user_job(user_id, job_created_at):
+            return
+
         await update_reading_session(
             user_id,
             prefetch_state="failed",
@@ -244,9 +401,13 @@ async def _run_serialized_audio_job(bot: Bot, job: SerializedAudioJob) -> None:
         return
 
     user_id = int(job["user_id"])
+    job_created_at = float(job.get("created_at") or 0)
     chat_id = int(job["chat_id"])
     expected_session_id = str(job["session_id"])
     status_message_id = job.get("status_message_id")
+
+    if await _should_skip_deleted_user_job(user_id, job_created_at):
+        return
 
     message = _TelegramMessageProxy(bot, chat_id)
     status_msg = (
@@ -261,6 +422,7 @@ async def _run_serialized_audio_job(bot: Bot, job: SerializedAudioJob) -> None:
             user_id=user_id,
             expected_session_id=expected_session_id,
             status_msg=status_msg,  # type: ignore[arg-type]
+            job_created_at=job_created_at,
         )
         return
 
@@ -270,6 +432,7 @@ async def _run_serialized_audio_job(bot: Bot, job: SerializedAudioJob) -> None:
             user_id=user_id,
             expected_session_id=expected_session_id,
             status_msg=status_msg,  # type: ignore[arg-type]
+            job_created_at=job_created_at,
         )
         return
 
@@ -481,7 +644,12 @@ async def _export_reading_audio_now(
     user_id: int,
     expected_session_id: str | None,
     status_msg: Message | None,
+    job_created_at: float | None = None,
 ) -> None:
+    if await _should_skip_deleted_user_job(user_id, job_created_at):
+        await safe_delete_message(status_msg)
+        return
+
     session = await get_reading_session(user_id)
 
     if not _is_same_session(session, expected_session_id):
@@ -504,6 +672,10 @@ async def _export_reading_audio_now(
         total_parts = len(chunks)
 
         for index, chunk_text in enumerate(chunks, start=1):
+            if await _should_skip_deleted_user_job(user_id, job_created_at):
+                await safe_delete_message(status_msg)
+                return
+
             current_session = await get_reading_session(user_id)
 
             if not _is_same_session(current_session, expected_session_id):
@@ -555,6 +727,11 @@ async def _export_reading_audio_now(
                     f"TTS returned no audio files for export part {index}/{total_parts}"
                 )
 
+            if await _should_skip_deleted_user_job(user_id, job_created_at):
+                _cleanup_audio_files(audio_files)
+                await safe_delete_message(status_msg)
+                return
+
             generated_audio_files.extend(audio_files)
 
         await safe_edit_message(status_msg, EXPORT_AUDIO_CONCATENATING_TEXT)
@@ -574,6 +751,10 @@ async def _export_reading_audio_now(
                     max_size_mb=EXPORT_AUDIO_MAX_SIZE_MB,
                 )
             )
+            return
+
+        if await _should_skip_deleted_user_job(user_id, job_created_at):
+            await safe_delete_message(status_msg)
             return
 
         current_session = await get_reading_session(user_id)
@@ -627,6 +808,7 @@ async def export_reading_audio(
     await update_reading_session(user_id, is_generating=True)
 
     chat_id = _message_chat_id(message)
+    job_created_at = time.time()
 
     if _use_redis_audio_queue() and chat_id is not None:
         status_msg = None
@@ -646,6 +828,7 @@ async def export_reading_audio(
                     "chat_id": chat_id,
                     "session_id": session_id,
                     "status_message_id": _status_message_id(status_msg),
+                    "created_at": job_created_at,
                 }
             )
             return
@@ -679,6 +862,7 @@ async def export_reading_audio(
             user_id=user_id,
             expected_session_id=session_id,
             status_msg=status_msg,
+            job_created_at=job_created_at,
         )
 
     try:
@@ -940,6 +1124,7 @@ async def _start_prefetch_next_chunk(
                     "voice": next_voice,
                     "rate": rate,
                     "provider_chain": provider_chain,
+                    "created_at": time.time(),
                 }
             )
             return
@@ -977,10 +1162,15 @@ async def _send_audio_chunk_now(
     user_id: int,
     expected_session_id: str | None,
     status_msg: Message | None,
+    job_created_at: float | None = None,
 ) -> None:
     """
     Надсилає поточну частину тексту голосом і запускає prefetch наступної.
     """
+    if await _should_skip_deleted_user_job(user_id, job_created_at):
+        await safe_delete_message(status_msg)
+        return
+
     session = await get_reading_session(user_id)
 
     if not _is_same_session(session, expected_session_id):
@@ -1038,6 +1228,12 @@ async def _send_audio_chunk_now(
                 safe_remove_file(audio_path)
             return
 
+        if await _should_skip_deleted_user_job(user_id, job_created_at):
+            for audio_path in audio_files:
+                safe_remove_file(audio_path)
+            await safe_delete_message(status_msg)
+            return
+
         new_index = index + 1
         has_next = new_index < len(chunks)
         summary_already_delivered = bool(current_session.get("summary_delivered"))
@@ -1058,6 +1254,12 @@ async def _send_audio_chunk_now(
             show_summary_button=not summary_already_delivered,
         )
         part_caption = build_part_caption(index + 1, len(chunks))
+
+        if await _should_skip_deleted_user_job(user_id, job_created_at):
+            for audio_path in audio_files:
+                safe_remove_file(audio_path)
+            await safe_delete_message(status_msg)
+            return
 
         await _send_audio_files(
             message=message,
@@ -1132,6 +1334,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
     await update_reading_session(user_id, is_generating=True)
 
     chat_id = _message_chat_id(message)
+    job_created_at = time.time()
 
     if _use_redis_audio_queue() and chat_id is not None:
         status_msg = None
@@ -1152,6 +1355,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
                     "chat_id": chat_id,
                     "session_id": session_id,
                     "status_message_id": _status_message_id(status_msg),
+                    "created_at": job_created_at,
                 }
             )
             return
@@ -1190,6 +1394,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             user_id=user_id,
             expected_session_id=session_id,
             status_msg=status_msg,
+            job_created_at=job_created_at,
         )
 
     try:

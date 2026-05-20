@@ -8,7 +8,9 @@ from keyboards.privacy import (
     DELETE_MY_DATA_CANCEL_CALLBACK,
     DELETE_MY_DATA_CONFIRM_CALLBACK,
     delete_my_data_confirmation_keyboard,
+    parse_delete_my_data_callback_user_id,
 )
+from services.reading_service import cleanup_user_private_runtime_data
 from texts.privacy import (
     DELETE_MY_DATA_CANCELLED_TEXT,
     DELETE_MY_DATA_CONFIRM_TEXT,
@@ -17,6 +19,15 @@ from texts.privacy import (
 )
 
 router = Router()
+
+CALLBACK_OWNER_MISMATCH_TEXT = "Ця кнопка належить іншому користувачу."
+
+
+def _callback_owner_matches(callback: CallbackQuery) -> bool:
+    user_id = callback.from_user.id if callback.from_user else None
+    owner_id = parse_delete_my_data_callback_user_id(callback.data)
+
+    return owner_id is None or owner_id == user_id
 
 
 @router.message(Command("privacy"))
@@ -38,11 +49,11 @@ async def delete_my_data_handler(message: Message) -> None:
     await message.answer(
         DELETE_MY_DATA_CONFIRM_TEXT,
         parse_mode="HTML",
-        reply_markup=delete_my_data_confirmation_keyboard(),
+        reply_markup=delete_my_data_confirmation_keyboard(user_id),
     )
 
 
-@router.callback_query(F.data == DELETE_MY_DATA_CONFIRM_CALLBACK)
+@router.callback_query(F.data.startswith(DELETE_MY_DATA_CONFIRM_CALLBACK))
 async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id if callback.from_user else None
 
@@ -50,7 +61,13 @@ async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
         await callback.answer("Не вдалося визначити користувача.", show_alert=True)
         return
 
+    if not _callback_owner_matches(callback):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
+    runtime_result = await cleanup_user_private_runtime_data(user_id)
     result = await delete_user_private_data(user_id)
+    result.update(runtime_result)
 
     if callback.message:
         await callback.message.edit_text(
@@ -61,8 +78,12 @@ async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
     await callback.answer("Дані очищено.")
 
 
-@router.callback_query(F.data == DELETE_MY_DATA_CANCEL_CALLBACK)
+@router.callback_query(F.data.startswith(DELETE_MY_DATA_CANCEL_CALLBACK))
 async def delete_my_data_cancel_callback(callback: CallbackQuery) -> None:
+    if not _callback_owner_matches(callback):
+        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+        return
+
     if callback.message:
         await callback.message.edit_text(DELETE_MY_DATA_CANCELLED_TEXT)
 

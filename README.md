@@ -1,348 +1,218 @@
 # UTOS Audio Assistant Bot
 
-Telegram-бот для перетворення тексту, документів, фотографій з текстом і веб-статей у голосові повідомлення.
+Telegram-бот, який перетворює текст, документи, фото з текстом і веб-статті на голосові повідомлення.
 
-Проєкт орієнтований на доступність: користувач надсилає матеріал, бот витягує текст, за потреби розбиває його на частини, озвучує та надсилає результат у форматі Telegram voice.
+Проєкт створений як аудіо-помічник для швидкого прослуховування матеріалів: користувач надсилає текст або файл, бот витягує вміст, за потреби ділить його на частини, генерує озвучку і надсилає результат у форматі Telegram voice.
 
 ## Можливості
 
 - Озвучення звичайного тексту.
-- Читання PDF, DOCX і TXT документів.
-- Розпізнавання тексту з фотографій через Gemini OCR.
+- Читання PDF, DOCX і TXT файлів.
+- Розпізнавання тексту з фото через Gemini OCR.
 - Витягування основного тексту зі статей за посиланням.
-- Генерація короткого змісту великих матеріалів.
-- Каталог історії документів з пагінацією.
-- Користувацьке меню команд: `/start`, `/help`, `/settings`, `/catalog`, `/catalog_clear`, `/usage`, `/privacy`, `/delete_my_data`.
-- Privacy-команди `/privacy` і `/delete_my_data`, confirmation-flow для очищення даних і retention-очищення історії документів.
+- Короткий зміст великих матеріалів.
+- Каталог документів із можливістю повторно відкрити матеріал.
 - Налаштування голосу та швидкості.
-- Ліміти використання для звичайних користувачів і режим `Ліміт+`.
-- Адмін-меню зі статистикою, користувачами, баном, видачею `Ліміт+` і редагуванням лімітів.
-- Адмін-статистика помилок, latency і оцінки витрат для TTS/Gemini/фотографій.
-- Захист від спаму через rate limit.
-- Docker-запуск із Redis для rate limit, reading sessions, audio queue, metrics stream і health API.
+- Денна статистика використання для користувача.
+- Ліміти для звичайних користувачів і режим `Ліміт+`.
+- Адмін-меню зі статистикою, користувачами, баном, `Ліміт+` і редагуванням лімітів.
+- Privacy-команди для очищення каталогу або персональних даних.
+- Docker-запуск із Redis, SQLite, health API і фоновими чергами озвучки.
 
-## Поточна логіка AI/OCR/TTS
+## Підтримувані матеріали
 
-### AI parsing
+Бот приймає:
 
-Основний AI-провайдер для парсингу і коротких змістів: Gemini.
+- звичайний текст;
+- PDF;
+- DOCX;
+- TXT;
+- фото з текстом;
+- посилання на статтю або новину.
 
-Gemini-запити мають quota-aware fallback за моделями. Якщо основна модель повертає `429 RESOURCE_EXHAUSTED`, бот пробує наступну сумісну модель із ланцюжка:
+Якщо матеріал великий, бот розбиває його на частини. Після кожної частини користувач може перейти далі, отримати короткий зміст або завершити читання.
 
-```env
-GEMINI_TEXT_MODEL=gemini-3.1-flash-lite
-GEMINI_TEXT_MODEL_CHAIN=gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite
-```
+## Мови
 
-У коді залишена опційна підтримка Ollama, але за замовчуванням вона вимкнена, бо локальна модель відповідала повільніше та гірше для поточного сценарію.
+Бот автоматично визначає мову тексту.
 
-### OCR
+Для прямого добору TTS-голосу підтримуються:
 
-OCR працює тільки через Gemini.
+- українська;
+- англійська;
+- німецька;
+- польська;
+- словацька;
+- чеська.
 
-Для фотографій використовується такий самий принцип fallback:
+Gemini може обробляти й інші мови для OCR, парсингу та короткого змісту, але для озвучення бот використає найближчий доступний fallback-голос.
 
-```env
-GEMINI_OCR_MODEL=gemini-3.1-flash-lite
-GEMINI_OCR_MODEL_CHAIN=gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite
-```
+## Швидкий Старт Через Docker
 
-Tesseract і PaddleOCR були протестовані та прибрані:
+Найпростіший спосіб запуску — Docker Compose.
 
-- Tesseract працював некоректно для українських фотографій.
-- PaddleOCR був кращий за Tesseract, але помітно гірший за Gemini і додавав велику вагу Docker-образу.
-
-### TTS
-
-Поточний пріоритет озвучки:
-
-- Для звичайних користувачів: `Edge`.
-- Для `Ліміт+`: `Gemini -> Edge`.
-
-Бот автоматично визначає мову тексту. Для прямого добору TTS-голосу зараз підтримуються українська, англійська, німецька, польська, словацька та чеська. Інші мови Gemini може обробити для OCR/summary/parser, але озвучення піде через найближчий доступний fallback-голос.
-
-Gemini TTS підтримує вибір жіночого та чоловічого голосу на основі вибраного користувачем голосу.
-Для стабільності на великих матеріалах Gemini TTS використовує менші внутрішні фрагменти тексту, ніж Edge/Piper: за замовчуванням до `1600` символів на audio-запит. Для audio-запитів також є окремий timeout `120` секунд, щоб довша озвучка не падала через глобальний Gemini timeout для OCR/AI. Це зменшує ризик timeout, порожнього audio payload і drift у довгих відповідях preview-моделей.
-
-Для Gemini TTS fallback окремий, бо TTS підтримують тільки audio-generation моделі:
-
-```env
-GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
-GEMINI_TTS_MODEL_CHAIN=gemini-2.5-flash-preview-tts
-GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=120
-GEMINI_TTS_CHUNK_MAX_LENGTH=1600
-```
-
-## Стабільність зовнішніх API
-
-Усі Gemini-запити централізовані в `services/gemini_client.py`.
-
-Wrapper додає:
-
-- timeout на запит;
-- retry budget;
-- exponential backoff;
-- логування latency;
-- неблокуючий запис latency, помилок і орієнтовної вартості в адмін-статистику через telemetry queue;
-- єдину точку для Gemini OCR, Gemini TTS і AI parser.
-
-Основні налаштування:
-
-```env
-GEMINI_REQUEST_TIMEOUT_SECONDS=45
-GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=120
-GEMINI_RETRY_ATTEMPTS=2
-GEMINI_RETRY_BASE_DELAY_SECONDS=1.0
-GEMINI_RETRY_MAX_DELAY_SECONDS=6.0
-GEMINI_ESTIMATED_INPUT_COST_PER_1K_CHARS_USD=0.0
-GEMINI_ESTIMATED_OUTPUT_COST_PER_1K_CHARS_USD=0.0
-TTS_ESTIMATED_COST_PER_1K_CHARS_USD=0.0
-```
-
-Поля estimated cost за замовчуванням дорівнюють `0.0`, бо тарифи залежать від провайдера та моделі. Якщо потрібно бачити приблизні витрати в адмін-меню, задайте власну ціну за 1000 символів.
-
-## Контроль ресурсів
-
-### Audio cache
-
-Згенеровані voice-файли кешуються у `data/audio_cache`, щоб не генерувати однакові chunks повторно.
-
-Кеш має обмеження:
-
-```env
-AUDIO_CACHE_ENABLED=1
-AUDIO_CACHE_DIR=data/audio_cache
-AUDIO_CACHE_MAX_SIZE_MB=1024
-AUDIO_CACHE_MAX_AGE_DAYS=30
-AUDIO_CACHE_CLEANUP_INTERVAL_SECONDS=3600
-```
-
-Cleanup видаляє старі файли та утримує кеш у межах заданого розміру. Cache hit оновлює час доступу до файлу, тому cleanup поводиться як LRU.
-
-### Rate limit
-
-У Docker використовується Redis-backed rate limit. Якщо Redis недоступний, middleware переходить на in-memory fallback.
-
-```env
-RATE_LIMIT_BACKEND=redis
-RATE_LIMIT_MAX_EVENTS=8
-RATE_LIMIT_PERIOD_SECONDS=10
-RATE_LIMIT_WARNING_COOLDOWN_SECONDS=10
-```
-
-### Reading sessions і audio queue
-
-Поточні reading-сесії зберігаються в Redis, а не тільки в пам'яті процесу. Це дозволяє переживати restart бота без миттєвої втрати активного стану сесії та готує проєкт до запуску кількох bot replicas.
-
-Генерація audio для поточної частини ставиться в Redis-backed queue, тому Telegram handler швидко відпускає користувацький lock, а бот показує статус черги та прогрес внутрішніх audio-фрагментів. Якщо попередній матеріал користувача ще очікує або генерується, новий матеріал не замінює активну сесію, щоб queued job не ставав stale.
-
-Черга має обмеження розміру. Якщо вона заповнена, бот відповідає текстом і не ставить новий job у fallback memory queue.
-
-Для наступної частини зберігається prefetch, тож кнопка "Слухати далі" часто отримує вже готове audio.
-Якщо одна reading-частина розбивається на кілька voice-файлів, кожен файл має власний підпис на кшталт `📄 Частина 1 з 2 · аудіо 1 з 2`, а навігаційне меню лишається тільки на останньому voice-файлі.
-Для `Ліміт+` доступний export повної озвучки в один файл: бот генерує всі частини у фоновій черзі, об'єднує їх через ffmpeg і за потреби застосовує smooth merge з нормалізацією гучності та коротким crossfade між сегментами.
-
-```env
-READING_SESSION_TTL_SECONDS=2700
-READING_SESSION_BACKEND=redis
-READING_AUDIO_QUEUE_BACKEND=redis
-READING_AUDIO_QUEUE_REDIS_KEY=reading:audio:queue
-READING_AUDIO_QUEUE_MAX_SIZE=20
-EXPORT_AUDIO_MAX_SIZE_MB=48
-EXPORT_AUDIO_SMOOTH_MERGE_ENABLED=1
-EXPORT_AUDIO_CROSSFADE_MS=120
-```
-
-Поточна Redis queue використовує простий list-based pattern. Якщо потрібна сильніша гарантія доставки jobs після crash worker-а, наступний крок — Redis Streams consumer groups з `XACK`, reclaim pending jobs і dedupe/job-state ключами.
-
-### Privacy і retention
-
-Бот має короткий privacy-текст у команді `/privacy`, окреме очищення каталогу
-через `/catalog_clear` і повніше очищення приватних даних через `/delete_my_data`.
-Обидві destructive-команди запитують підтвердження.
-
-`/delete_my_data` очищає:
-
-- історію документів користувача;
-- денні лічильники використання;
-- персональні налаштування голосу, швидкості та TTS-провайдера.
-
-Адмін-статус, бан або `Ліміт+` не скидаються цією командою, щоб не ламати модерацію та доступ.
-
-Історія документів і технічні метрики очищаються фоновим maintenance worker:
-
-```env
-DOCUMENT_HISTORY_RETENTION_DAYS=90
-SERVICE_METRICS_RETENTION_DAYS=30
-MAINTENANCE_CLEANUP_INTERVAL_SECONDS=86400
-```
-
-## Архітектура
-
-```mermaid
-flowchart TD
-    User["Telegram user"] --> Bot["Aiogram bot"]
-
-    Bot --> Middlewares["Middlewares"]
-    Middlewares --> Ban["Ban middleware"]
-    Middlewares --> Activity["User activity"]
-    Middlewares --> RateLimit["Redis rate limit"]
-
-    Bot --> Handlers["Handlers"]
-    Handlers --> Messages["messages.py"]
-    Handlers --> Settings["settings.py"]
-    Handlers --> Catalog["catalog.py"]
-    Handlers --> AdminMenu["admin_menu.py"]
-    Handlers --> ReadingCallbacks["reading_callbacks.py"]
-    Handlers --> Privacy["privacy.py"]
-
-    Messages --> Extractor["content_extractor.py"]
-    Extractor --> FileProcessor["file_processor.py"]
-    Extractor --> OCR["ocr.py"]
-    Extractor --> Parser["parser.py"]
-
-    OCR --> GeminiClient["gemini_client.py"]
-    Parser --> GeminiClient
-    Parser --> Ollama["ollama_ai.py optional"]
-    GeminiClient --> Telemetry["telemetry_service.py"]
-
-    Messages --> ReadingService["reading_service.py"]
-    ReadingCallbacks --> ReadingService
-    ReadingService --> AudioQueue["Redis audio queue"]
-    ReadingService --> TTS["tts.py"]
-    ReadingService --> Sessions["Redis reading sessions"]
-    ReadingService --> Sender["voice_sender.py"]
-
-    TTS --> GeminiTTS["gemini_tts.py"]
-    TTS --> PiperTTS["piper_tts.py"]
-    TTS --> EdgeTTS["edge-tts"]
-    TTS --> AudioCache["audio_cache.py"]
-    TTS --> FFmpeg["ffmpeg"]
-    TTS --> Telemetry
-
-    Settings --> UserSettings["user_settings_service.py"]
-    AdminMenu --> Limits["usage_limits_service.py"]
-    AdminMenu --> Metrics["service_metrics"]
-    Catalog --> History["document_history_service.py"]
-    Privacy --> SQLite["SQLite"]
-
-    UserSettings --> SQLite
-    Limits --> SQLite
-    History --> SQLite
-    Telemetry --> SQLite
-    Metrics --> SQLite
-    Maintenance["maintenance_service.py"] --> SQLite
-    RateLimit --> Redis["Redis"]
-```
-
-## Структура проєкту
-
-```text
-bot.py                         # запуск бота, middleware, router-и, shutdown cleanup
-config.py                      # env-конфіг і валідація
-.env.example                   # безпечний шаблон конфігурації без секретів
-database/db.py                 # SQLite schema, migrations, CRUD
-handlers/                      # Telegram handlers
-keyboards/                     # inline/reply клавіатури
-middlewares/                   # ban, activity, rate limit
-services/                      # бізнес-логіка, AI, OCR, TTS, cache, Redis
-texts/                         # тексти UI
-utils/                         # splitter, audio helpers
-tests/                         # pytest coverage
-Dockerfile
-docker-compose.yml
-```
-
-## SQLite чи PostgreSQL
-
-На поточному етапі переходити з SQLite на PostgreSQL не обов'язково.
-
-SQLite зараз підходить, тому що:
-
-- бот працює як один основний process;
-- дані прості: users, settings, usage counters, document history;
-- увімкнено WAL і busy timeout;
-- ліміти використання списуються атомарно через `BEGIN IMMEDIATE`;
-- Redis уже закриває rate limit і частину runtime-навантаження.
-
-PostgreSQL має сенс додавати, якщо з'явиться хоча б одна з умов:
-
-- кілька bot replicas або горизонтальне масштабування;
-- часті конкурентні записи від великої кількості користувачів;
-- потрібні складні аналітичні запити, dashboard-и або audit log;
-- потрібні транзакції між кількома сутностями зі складними зв'язками;
-- потрібен managed backup/restore і нормальна production-експлуатація БД.
-
-Рекомендація: поки лишити SQLite. Якщо бот почне активно рости, спочатку варто винести database layer за repository interface, а вже потім додавати PostgreSQL. Прямий перехід зараз додасть складність без очевидної користі.
-
-## Запуск через Docker
-
-1. Скопіювати `.env.example` у `.env`.
-2. Заповнити мінімальні змінні:
+1. Створіть Telegram-бота через [BotFather](https://t.me/BotFather) і отримайте `BOT_TOKEN`.
+2. Створіть Gemini API key у [Google AI Studio](https://aistudio.google.com/app/apikey).
+3. Скопіюйте `.env.example` у `.env`.
+4. Заповніть мінімальні змінні:
 
 ```env
 BOT_TOKEN=your_telegram_bot_token
 GEMINI_API_KEY=your_gemini_api_key
 ADMIN_IDS=123456789
-HIDE_USER_COMMANDS=1
-CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP=0
+```
 
-AI_PROVIDER_CHAIN=gemini
-GEMINI_TEXT_MODEL=gemini-3.1-flash-lite
-GEMINI_TEXT_MODEL_CHAIN=gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite
-GEMINI_OCR_MODEL=gemini-3.1-flash-lite
-GEMINI_OCR_MODEL_CHAIN=gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite
+5. Запустіть проєкт:
 
-TTS_PROVIDER=edge
-TTS_PROVIDER_CHAIN=edge
-GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
-GEMINI_TTS_MODEL_CHAIN=gemini-2.5-flash-preview-tts
-GEMINI_TTS_REQUEST_TIMEOUT_SECONDS=120
-GEMINI_TTS_CHUNK_MAX_LENGTH=1600
+```powershell
+docker compose up --build
+```
 
+Дані бота зберігаються у `./data`. Redis піднімається окремим сервісом у Docker Compose.
+
+## Основні Env-Змінні
+
+Повний список доступних налаштувань дивіться в `.env.example`. Для старту зазвичай достатньо змін нижче.
+
+| Змінна | Обов'язкова | Для чого |
+| --- | --- | --- |
+| `BOT_TOKEN` | Так | Telegram token від BotFather. |
+| `GEMINI_API_KEY` | Так | API key для Gemini OCR, summary і Gemini TTS. |
+| `ADMIN_IDS` | Так | Telegram user ID адміністраторів через кому. |
+| `DB_PATH` | Ні | Шлях до SQLite бази. У Docker краще `/app/data/bot_database.sqlite`. |
+| `REDIS_URL` | Ні | Redis для rate limit, reading sessions, audio queue і metrics stream. |
+| `TTS_PROVIDER` | Ні | Основний TTS provider. За замовчуванням `edge`. |
+| `TTS_PROVIDER_CHAIN` | Ні | Fallback-ланцюжок TTS. За замовчуванням `edge`. |
+| `READING_SESSION_BACKEND` | Ні | Де зберігати активні reading-сесії: `memory` або `redis`. |
+| `READING_AUDIO_QUEUE_BACKEND` | Ні | Черга генерації озвучки: `memory` або `redis`. |
+| `API_ENABLED` | Ні | Вмикає lightweight API поруч із polling-ботом. |
+| `API_AUTH_TOKEN` | Рекомендовано | Bearer token для `/metrics` і `/admin/stats`. |
+| `LOG_FORMAT` | Ні | `text` для локального читання або `json` для log collectors. |
+
+Для Docker Compose рекомендовано:
+
+```env
+DB_PATH=/app/data/bot_database.sqlite
+REDIS_URL=redis://redis:6379/0
 RATE_LIMIT_BACKEND=redis
 READING_SESSION_BACKEND=redis
 READING_AUDIO_QUEUE_BACKEND=redis
-READING_AUDIO_QUEUE_MAX_SIZE=20
 API_ENABLED=1
 API_HOST=0.0.0.0
 API_PORT=8080
 API_HOST_PORT=8081
 ```
 
-3. Запустити:
+## Як Користуватися
 
-```powershell
-docker compose up --build
+1. Надішліть текст, файл, фото або посилання.
+2. Бот витягне текст і почне озвучення.
+3. Якщо матеріал великий, бот надішле його частинами.
+4. Через кнопки можна слухати наступну частину, створити короткий зміст або завершити роботу з матеріалом.
+5. У каталозі можна відкрити нещодавні документи повторно.
+
+## Команди
+
+Команди для звичайних користувачів:
+
+| Команда | Опис |
+| --- | --- |
+| `/start` | Почати роботу. |
+| `/help` | Показати довідку. |
+| `/settings` | Налаштувати голос і швидкість. |
+| `/catalog` | Відкрити каталог документів. |
+| `/catalog_clear` | Очистити каталог документів. |
+| `/usage` | Показати статистику використання. |
+| `/privacy` | Показати політику конфіденційності. |
+| `/delete_my_data` | Очистити історію документів і персональні дані. |
+
+Адміністратори додатково мають доступ до адмін-меню, статистики, керування користувачами, банів, `Ліміт+` і денних лімітів.
+
+## API Та Health Checks
+
+У Docker Compose API доступний на `http://localhost:8081`, якщо `API_ENABLED=1`.
+
+Доступні endpoint-и:
+
+| Endpoint | Призначення |
+| --- | --- |
+| `GET /health` | Liveness-перевірка процесу. |
+| `GET /ready` | Readiness-перевірка SQLite/Redis. |
+| `GET /version` | Версія сервісу. |
+| `GET /metrics?days=1` | Технічні service metrics. |
+| `GET /admin/stats?date=YYYY-MM-DD` | Агрегована адмін-статистика. |
+| `POST /webhook/telegram` | Telegram webhook endpoint для `BOT_RUNTIME_MODE=webhook`. |
+
+`/metrics` і `/admin/stats` підтримують Bearer-захист через `API_AUTH_TOKEN`.
+
+Важливо: якщо `API_AUTH_TOKEN` порожній, ці endpoint-и відкриті. Не публікуйте API назовні без токена або іншого мережевого захисту.
+
+## Архітектура
+
+Коротко про runtime:
+
+- `aiogram` приймає Telegram update-и.
+- Handlers обробляють команди, повідомлення, каталог, налаштування, privacy і адмін-дії.
+- `content_extractor` витягує текст із повідомлень, файлів, фото або URL.
+- Gemini використовується для OCR, короткого змісту і частини TTS-сценаріїв.
+- Edge TTS є основним provider-ом озвучення.
+- SQLite зберігає користувачів, налаштування, ліміти, історію документів і метрики.
+- Redis використовується для rate limit, reading sessions, черги озвучки і опціонального metrics stream.
+- `reading_service` координує reading-сесії, генерацію аудіо, prefetch наступної частини і export повної озвучки.
+
+```mermaid
+flowchart TD
+    User["Telegram user"] --> Bot["Aiogram bot"]
+    Bot --> Handlers["Handlers"]
+    Handlers --> Extractor["Content extractor"]
+    Extractor --> Parser["Parser / URL text"]
+    Extractor --> OCR["Gemini OCR"]
+    Handlers --> Reading["Reading service"]
+    Reading --> TTS["TTS providers"]
+    TTS --> Edge["Edge TTS"]
+    TTS --> GeminiTTS["Gemini TTS"]
+    Reading --> Redis["Redis sessions / queue"]
+    Handlers --> SQLite["SQLite"]
+    Parser --> Gemini["Gemini client"]
+    OCR --> Gemini
+    GeminiTTS --> Gemini
 ```
 
-Дані бота зберігаються у `./data`.
+## Структура Проєкту
 
-Docker Compose також вмикає lightweight API на `http://localhost:8081` за замовчуванням. Host-порт можна змінити через `API_HOST_PORT`.
+```text
+bot.py                         # запуск бота, router-и, middleware, shutdown cleanup
+config.py                      # env-конфіг і валідація
+database/db.py                 # SQLite schema, migrations, CRUD
+handlers/                      # Telegram handlers
+keyboards/                     # inline/reply клавіатури
+middlewares/                   # ban, activity, rate limit
+services/                      # бізнес-логіка, AI, OCR, TTS, Redis, cache
+texts/                         # тексти UI
+utils/                         # splitter, audio helpers
+tests/                         # unit/smoke/API tests
+integration_tests/             # Redis integration tests
+Dockerfile
+docker-compose.yml
+.env.example                   # безпечний шаблон конфігурації без секретів
+```
 
-- `GET /health` — швидка liveness-перевірка процесу;
-- `GET /ready` — readiness SQLite/Redis;
-- `GET /version` — версія сервісу;
-- `GET /metrics?days=1` — технічні service metrics;
-- `GET /admin/stats?date=YYYY-MM-DD` — агрегована адмін-статистика;
-- `POST /webhook/telegram` — Telegram webhook endpoint для режиму `BOT_RUNTIME_MODE=webhook`.
+## Локальний Запуск Для Розробки
 
-`/metrics` і `/admin/stats` підтримують Bearer-захист через `API_AUTH_TOKEN`. Якщо токен порожній, endpoint-и відкриті для внутрішнього/docker-доступу.
-
-`.env.example` потрібен як безпечний шаблон конфігурації: він показує всі доступні змінні без реальних токенів, допомагає швидко підняти проєкт після клонування і зменшує ризик випадково закомітити секрети з `.env`.
-
-## Локальний запуск
+Потрібні Python `3.14.4` і `ffmpeg`.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 python bot.py
 ```
 
-Piper лишається технічно доступним у коді, але не використовується у користувацькому меню за замовчуванням.
+Для локального запуску без Docker Redis можна не піднімати, якщо залишити memory-backend-и у `.env`. Для production рекомендований Docker Compose із Redis.
 
 ## Тести
+
+Основний тестовий набір:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
@@ -351,42 +221,38 @@ Piper лишається технічно доступним у коді, але
 Поточний стан після останньої перевірки:
 
 ```text
-247 passed, 1 warning
+275 passed, 1 warning
 ```
 
-Redis integration-тести винесені в `integration_tests/` і запускаються окремо. У GitHub CI Redis піднімається як service, тому ці тести виконуються реально.
-Warning походить із залежності `google-genai` і не є помилкою проєкту.
+Redis integration-тести запускаються окремо:
 
-## Адмін-функції
+```powershell
+.\.venv\Scripts\python.exe -m pytest integration_tests -q
+```
 
-Адмін визначається через `ADMIN_IDS`.
+Локально вони skip-яться, якщо Redis не запущений на `TEST_REDIS_URL`. У GitHub CI Redis піднімається як service.
 
-Підтримується:
+## Privacy Та Дані
 
-- перегляд статистики;
-- сторінки користувачів;
-- бан і розбан;
-- видача `Ліміт+` на 30 днів або безстроково;
-- відкликання `Ліміт+`;
-- редагування денних лімітів;
-- broadcast через старі admin-команди.
+Бот зберігає:
 
-## Важливі operational notes
+- Telegram user ID, ім'я та username;
+- користувацькі налаштування голосу і швидкості;
+- денні лічильники використання;
+- історію документів для каталогу;
+- технічні метрики роботи сервісів.
 
-- Не комітити `.env`, бази даних, `data/`, кеші та voice-моделі.
+Команда `/catalog_clear` очищає каталог документів. Команда `/delete_my_data` після підтвердження очищає історію документів, денні лічильники, персональні налаштування, активну reading-сесію, задачі озвучки користувача в черзі та audio cache.
+
+Адмін-статус, бан або `Ліміт+` не скидаються через `/delete_my_data`, щоб не ламати модерацію і контроль доступу.
+
+## Security Notes
+
+- Не комітьте `.env`, бази даних, `data/`, кеші та voice-моделі.
+- Для production задайте `API_AUTH_TOKEN`, якщо API доступний не тільки всередині Docker/локальної мережі.
+- Зберігайте `BOT_TOKEN` і `GEMINI_API_KEY` тільки локально або в secret manager.
 - Для production краще запускати через Docker Compose.
-- Якщо Gemini OCR/AI починає давати timeout, спочатку зменшити навантаження або збільшити `GEMINI_REQUEST_TIMEOUT_SECONDS`.
-- Якщо саме Gemini TTS падає на довгій озвучці, збільшити `GEMINI_TTS_REQUEST_TIMEOUT_SECONDS` або зменшити `GEMINI_TTS_CHUNK_MAX_LENGTH`.
-- Якщо диск росте, перевірити `AUDIO_CACHE_MAX_SIZE_MB` і `AUDIO_CACHE_MAX_AGE_DAYS`.
-- Якщо користувачі спамлять sticker/unsupported content, middleware rate limit уже обмежує частоту, а handler не відповідає на кожне unsupported-повідомлення.
 
-## Поточний технічний стан
+## License
 
-Проєкт готовий до невеликого production-навантаження.
-
-Найближчі необов'язкові покращення:
-
-- розбити великі файли `services/parser.py`, `database/db.py`, `handlers/admin_menu.py`;
-- за потреби додати окремий dashboard для метрик замість перегляду тільки в Telegram.
-
-Це не блокери. Основні проблеми стабільності зовнішніх API та контролю ресурсів уже закриті.
+Проєкт поширюється під ліцензією GNU Affero General Public License v3.0. Дивіться [LICENSE](LICENSE).

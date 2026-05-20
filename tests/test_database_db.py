@@ -217,6 +217,36 @@ async def test_rejects_invalid_usage_field(workspace_tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_decrement_daily_usage_does_not_go_below_zero(
+    workspace_tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "usage_refund.sqlite"))
+
+    await db_module.init_db()
+    await db_module.increment_daily_usage(
+        user_id=1,
+        usage_date="2026-05-20",
+        field_name="files_processed",
+    )
+
+    await db_module.decrement_daily_usage(
+        user_id=1,
+        usage_date="2026-05-20",
+        field_name="files_processed",
+    )
+    await db_module.decrement_daily_usage(
+        user_id=1,
+        usage_date="2026-05-20",
+        field_name="files_processed",
+    )
+
+    usage = await db_module.get_daily_usage(1, "2026-05-20")
+
+    assert usage["files_processed"] == 0
+
+
+@pytest.mark.asyncio
 async def test_app_settings_roundtrip(workspace_tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(db_module, "DB_PATH", str(workspace_tmp_path / "settings.sqlite"))
 

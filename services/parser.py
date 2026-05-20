@@ -15,6 +15,7 @@ from google.genai import types
 from config import AI_PROVIDER_CHAIN, GEMINI_TEXT_MODEL, GEMINI_TEXT_MODEL_CHAIN
 from services.gemini_client import generate_gemini_content_with_fallback
 from services.ollama_ai import generate_ollama_text
+from utils.splitter import split_text
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 20
 MAX_HTML_BYTES = 2_000_000
 MAX_RAW_TEXT_FOR_AI = 30_000
+MAX_SUMMARY_PARTS = 20
 MIN_ARTICLE_LENGTH = 50
 MAX_REDIRECTS = 5
 
@@ -964,13 +966,7 @@ async def parse_article(url: str) -> str:
     return clean_text_for_tts(final_text)
 
 
-async def summarize_text_with_ai(text: str) -> str:
-    """
-    Створює короткий зміст великого тексту за допомогою AI.
-    """
-    if not text or len(text.strip()) < 50:
-        return "❌ Недостатньо тексту для короткого змісту."
-
+def _build_summary_prompt(text: str) -> str:
     prompt = f"""
 Ти — інструмент доступності для незрячих користувачів.
 Зроби дуже стислий, але інформативний переказ тексту.
@@ -982,11 +978,63 @@ async def summarize_text_with_ai(text: str) -> str:
 Якщо мов кілька, використовуй основну мову документа. Не перекладай без потреби.
 
 ТЕКСТ:
-{text[:MAX_RAW_TEXT_FOR_AI]}
+{text}
 """
 
+    return prompt
+
+
+def _build_partial_summary_prompt(
+    text: str,
+    part_number: int,
+    total_parts: int,
+) -> str:
+    return f"""
+Ти — інструмент доступності для незрячих користувачів.
+Це частина {part_number} з {total_parts} великого документа.
+
+Зроби стислий проміжний зміст саме цієї частини.
+Передай факти, висновки, важливі числа, імена, дати та причинно-наслідкові зв'язки.
+Не додавай вступів, Markdown або службових пояснень.
+Автоматично визнач мову цієї частини і відповідай тією самою мовою.
+
+ТЕКСТ ЧАСТИНИ:
+{text}
+"""
+
+
+def _build_final_summary_prompt(part_summaries: list[str]) -> str:
+    joined_summaries = "\n\n".join(
+        f"Частина {index}: {summary}"
+        for index, summary in enumerate(part_summaries, start=1)
+    )
+
+    return f"""
+Ти — інструмент доступності для незрячих користувачів.
+Нижче наведені проміжні короткі змісти частин одного документа.
+
+Створи фінальний короткий зміст усього документа.
+Максимум 3-4 речення.
+Прибери дублювання між частинами, збережи головну суть, важливі факти,
+числа, дати, імена та висновки.
+Автоматично визнач основну мову документа і відповідай тією самою мовою.
+Не використовуй Markdown і не додавай вступів.
+
+КОРОТКІ ЗМІСТИ ЧАСТИН:
+{joined_summaries}
+"""
+
+
+def _is_summary_error(text: str | None) -> bool:
+    return not text or text.strip().startswith("❌")
+
+
+async def _summarize_single_text(text: str) -> str:
     try:
-        result = await _generate_ai_text(prompt, temperature=0.2)
+        result = await _generate_ai_text(
+            _build_summary_prompt(text[:MAX_RAW_TEXT_FOR_AI]),
+            temperature=0.2,
+        )
 
         if not result:
             return "❌ Не вдалося створити короткий зміст."
@@ -996,3 +1044,82 @@ async def summarize_text_with_ai(text: str) -> str:
     except Exception as e:
         logger.error("Помилка самаризації AI: %s", e)
         return "❌ Не вдалося створити короткий зміст через помилку сервера."
+
+
+async def _summarize_large_text(text: str) -> str:
+    parts = split_text(text, max_length=MAX_RAW_TEXT_FOR_AI)
+
+    if len(parts) <= 1:
+        return await _summarize_single_text(text)
+
+    if len(parts) > MAX_SUMMARY_PARTS:
+        logger.info(
+            "Summary: документ має %s частин; обмежую до %s для стабільності",
+            len(parts),
+            MAX_SUMMARY_PARTS,
+        )
+        parts = parts[:MAX_SUMMARY_PARTS]
+
+    partial_summaries: list[str] = []
+    total_parts = len(parts)
+
+    for index, part in enumerate(parts, start=1):
+        try:
+            result = await _generate_ai_text(
+                _build_partial_summary_prompt(part, index, total_parts),
+                temperature=0.2,
+            )
+        except Exception as error:
+            logger.warning(
+                "Summary: частина %s/%s не оброблена: %s",
+                index,
+                total_parts,
+                error,
+            )
+            continue
+
+        if _is_summary_error(result):
+            logger.warning(
+                "Summary: частина %s/%s повернула порожній/error результат",
+                index,
+                total_parts,
+            )
+            continue
+
+        partial_summaries.append(result.strip())
+
+    if not partial_summaries:
+        return "❌ Не вдалося створити короткий зміст."
+
+    try:
+        final_summary = await _generate_ai_text(
+            _build_final_summary_prompt(partial_summaries),
+            temperature=0.2,
+        )
+    except Exception as error:
+        logger.error("Помилка фінальної самаризації AI: %s", error)
+        return "❌ Не вдалося створити короткий зміст через помилку сервера."
+
+    if not final_summary:
+        return "❌ Не вдалося створити короткий зміст."
+
+    return final_summary
+
+
+async def summarize_text_with_ai(text: str) -> str:
+    """
+    Створює короткий зміст тексту.
+
+    Для великих документів використовує map-reduce:
+    спочатку стискає окремі частини, потім створює фінальний summary
+    по проміжних змістах, щоб не втрачати другу половину документа.
+    """
+    if not text or len(text.strip()) < 50:
+        return "❌ Недостатньо тексту для короткого змісту."
+
+    clean_text = text.strip()
+
+    if len(clean_text) <= MAX_RAW_TEXT_FOR_AI:
+        return await _summarize_single_text(clean_text)
+
+    return await _summarize_large_text(clean_text)
