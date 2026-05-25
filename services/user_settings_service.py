@@ -26,7 +26,7 @@ DEFAULT_USER_TTS_PROVIDER = "edge"
 
 TTS_PROVIDER_DISPLAY = {
     "edge": "Edge",
-    "gemini": "Gemini (Ліміт+)",
+    "gemini": "ШІ-озвучення (Ліміт+)",
 }
 
 ALLOWED_USER_TTS_PROVIDERS = {"edge"}
