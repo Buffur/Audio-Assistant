@@ -171,17 +171,17 @@ def catalog_keyboard(
 
         if has_chunks:
             open_button = InlineKeyboardButton(
-                text=f"▶️ Відкрити #{item_number}",
+                text=f"▶️ Відкрити {item_number}",
                 callback_data=build_catalog_open_callback(document_id)
             )
         else:
             open_button = InlineKeyboardButton(
-                text=f"ℹ️ Недоступно #{item_number}",
+                text=f"ℹ️ Недоступно {item_number}",
                 callback_data=build_catalog_unavailable_callback(document_id)
             )
 
         delete_button = InlineKeyboardButton(
-            text=f"🗑 Видалити #{item_number}",
+            text=f"🗑 Видалити {item_number}",
             callback_data=build_catalog_delete_confirm_callback(
                 document_id,
                 page=page,

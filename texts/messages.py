@@ -4,7 +4,10 @@ UNKNOWN_COMMAND_TEXT = (
     "❌ Невідома команда.\n\n"
     "Доступні команди:\n"
     "/start — почати роботу\n"
-    "/settings — налаштування голосу"
+    "/help — показати довідку\n"
+    "/settings — налаштувати голос і швидкість\n"
+    "/catalog — каталог документів\n"
+    "/usage — показати статистику використання"
 )
 
 RATE_LIMIT_TEXT = (
@@ -104,12 +107,12 @@ def build_generating_audio_progress_text(
     provider: str,
     cache_hit: bool,
 ) -> str:
-    cache_text = " з кешу" if cache_hit else ""
+    cache_text = " Готовий фрагмент знайдено в кеші." if cache_hit else ""
 
     return (
         f"⏳ Генерую частину {current_part} з {total_parts}: "
-        f"аудіо {completed_audio_chunks}/{total_audio_chunks} "
-        f"через {provider}{cache_text}..."
+        f"аудіо {completed_audio_chunks}/{total_audio_chunks}..."
+        f"{cache_text}"
     )
 
 
@@ -178,12 +181,12 @@ def build_export_audio_progress_text(
     provider: str,
     cache_hit: bool,
 ) -> str:
-    cache_text = " з кешу" if cache_hit else ""
+    cache_text = " Готовий фрагмент знайдено в кеші." if cache_hit else ""
 
     return (
         f"⏳ Готую повну озвучку: частина {current_part} з {total_parts}, "
-        f"аудіо {completed_audio_chunks}/{total_audio_chunks} "
-        f"через {provider}{cache_text}..."
+        f"аудіо {completed_audio_chunks}/{total_audio_chunks}..."
+        f"{cache_text}"
     )
 
 

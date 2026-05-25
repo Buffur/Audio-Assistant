@@ -1,6 +1,6 @@
 def build_privacy_text(retention_days: int) -> str:
     return (
-        "🔐 <b>Privacy</b>\n\n"
+        "🔐 <b>Конфіденційність</b>\n\n"
         "Бот зберігає Telegram ID, ім'я/username, налаштування голосу, "
         "лічильники використання та історію документів для каталогу.\n\n"
         f"Історія документів автоматично очищається через <b>{retention_days}</b> днів. "

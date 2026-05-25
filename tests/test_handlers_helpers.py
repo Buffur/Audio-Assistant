@@ -402,7 +402,8 @@ def test_catalog_page_callbacks_and_text() -> None:
     )
 
     assert "Сторінка 2 з 3" in text
-    assert "6. <b>Текст</b>" in text
+    assert "<b>6. Текст</b>" in text
+    assert "📖 10 символів · 🎧 1 частин" in text
 
 
 def test_delete_my_data_confirmation_keyboard_and_text() -> None:

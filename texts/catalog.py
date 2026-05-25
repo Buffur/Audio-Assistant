@@ -8,9 +8,9 @@ EMPTY_CATALOG_TEXT = (
     "матеріал зʼявиться в каталозі."
 )
 
-CATALOG_CLEARED_TEXT = "🧹 Каталог документів очищено."
+CATALOG_CLEARED_TEXT = "🧹 Каталог очищено."
 CATALOG_CLEAR_CONFIRM_TEXT = (
-    "Очистити весь каталог документів?\n\n"
+    "Очистити весь каталог?\n\n"
     "Цю дію не можна скасувати."
 )
 CATALOG_CLEAR_CANCELLED_TEXT = "Очищення каталогу скасовано."
@@ -63,15 +63,15 @@ def format_catalog_item(index: int, item: dict) -> str:
     preview = html.escape(str(item.get("text_preview") or "Без превʼю"))
     has_chunks = bool(item.get("has_chunks"))
 
-    status = "✅ Можна відкрити" if has_chunks else "⚠️ Старий запис, повторне відкриття недоступне"
+    status = "✅ Доступний для повторного відкриття" if has_chunks else "⚠️ Повторне відкриття недоступне"
 
     return (
-        f"{index}. <b>{source_type}</b> — {source_name}\n"
-        f"   🕒 {created_at}\n"
-        f"   🔠 Символів: {text_length}\n"
-        f"   🎧 Частин: {chunks_count}\n"
-        f"   {status}\n"
-        f"   <i>{preview}</i>"
+        f"<b>{index}. {source_type}</b>\n"
+        f"📌 {source_name}\n"
+        f"🕒 {created_at}\n"
+        f"📖 {text_length} символів · 🎧 {chunks_count} частин\n"
+        f"{status}\n"
+        f"<i>{preview}</i>"
     )
 
 
@@ -89,16 +89,16 @@ def build_catalog_text(
     total_items = len(items) if total_items is None else total_items
 
     parts = [
-        "📚 <b>Каталог документів:</b>\n",
-        f"Сторінка {page + 1} з {total_pages}. "
-        f"Показано {len(items)} з {total_items}.\n"
+        "📚 <b>Каталог</b>\n",
+        f"Сторінка {page + 1} з {total_pages} · "
+        f"показано {len(items)} з {total_items}"
     ]
 
     for index, item in enumerate(items, start=page * page_size + 1):
         parts.append(format_catalog_item(index, item))
 
     parts.append(
-        "\nНатисніть «Відкрити», щоб повернутися до документа.\n"
+        "\nНатисніть «Відкрити», щоб продовжити роботу з документом.\n"
         "/catalog_clear — очистити каталог"
     )
 
@@ -110,5 +110,5 @@ def build_catalog_document_opened_text(source_name: str, chunks_count: int) -> s
 
     return (
         f"📖 Відкрито з каталогу: <b>{safe_source_name}</b>\n\n"
-        f"🎧 Частин: {chunks_count}"
+        f"🎧 Частин для прослуховування: {chunks_count}"
     )

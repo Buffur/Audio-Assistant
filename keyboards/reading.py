@@ -8,7 +8,7 @@ READ_STOP_ACTION = "read_stop"
 READ_EXPORT_AUDIO_ACTION = "read_export_audio"
 
 CALLBACK_SEPARATOR = ":"
-SUMMARY_BUTTON_TEXT = "📝 Зміст"
+SUMMARY_BUTTON_TEXT = "📝 Короткий зміст"
 
 
 def build_reading_callback(action: str, session_id: str) -> str:
@@ -48,15 +48,15 @@ def reading_navigation_keyboard(
     """
     Клавіатура для навігації під час читання основного тексту.
 
-    Якщо є наступна частина, додається кнопка «Далі».
-    Кнопки «Зміст» і «Завершити» доступні окремими рядками.
+    Якщо є наступна частина, додається кнопка «Слухати далі».
+    Кнопки «Короткий зміст» і «Завершити» доступні окремими рядками.
     """
     keyboard = []
 
     if has_next:
         keyboard.append([
             InlineKeyboardButton(
-                text="▶️ Далі",
+                text="▶️ Слухати далі",
                 callback_data=build_reading_callback(
                     READ_NEXT_ACTION,
                     session_id
@@ -67,7 +67,7 @@ def reading_navigation_keyboard(
     if can_export_audio:
         keyboard.append([
             InlineKeyboardButton(
-                text="🎧 Один файл",
+                text="🎧 Повна озвучка",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
@@ -107,15 +107,15 @@ def summary_only_keyboard(
     """
     Клавіатура для попередніх voice-повідомлень.
 
-    Коли користувач натиснув «Далі», ми прибираємо тільки цю кнопку,
-    але залишаємо «Зміст» і «Завершити».
+    Коли користувач натиснув «Слухати далі», ми прибираємо тільки цю кнопку,
+    але залишаємо «Короткий зміст» і «Завершити».
     """
     export_rows = []
 
     if can_export_audio:
         export_rows.append([
             InlineKeyboardButton(
-                text="🎧 Один файл",
+                text="🎧 Повна озвучка",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
