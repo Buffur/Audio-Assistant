@@ -19,6 +19,7 @@ from services.reading_session_store import (
     get_reading_session,
     set_reading_session,
 )
+from services.ocr import OCR_NO_TEXT_MESSAGE
 from services.usage_limits_service import (
     detect_input_usage_type,
     refund_input_processing,
@@ -47,6 +48,11 @@ UNSUPPORTED_MESSAGE_WARNING_COOLDOWN_SECONDS = 30
 _user_processing_locks: dict[int, asyncio.Lock] = {}
 _user_processing_lock_usage: dict[int, int] = {}
 _last_unsupported_message_warning_time: dict[int, float] = {}
+
+TEXT_ONLY_EXTRACTION_ERRORS = {
+    SUPPORTED_FORMATS_ERROR,
+    OCR_NO_TEXT_MESSAGE,
+}
 
 
 def _reserve_user_processing_lock(user_id: int) -> asyncio.Lock:
@@ -173,7 +179,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         error_text = text if is_error_text(text) else GENERIC_TEXT_EXTRACT_ERROR
         await _refund_reserved_input(user_id, usage_type)
 
-        if error_text == SUPPORTED_FORMATS_ERROR:
+        if error_text in TEXT_ONLY_EXTRACTION_ERRORS:
             await safe_delete_message(status_msg)
             await message.answer(error_text)
             return
