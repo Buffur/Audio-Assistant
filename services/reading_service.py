@@ -1,13 +1,11 @@
 # Файл: services/reading_service.py
 
 import asyncio
-import json
 import logging
 import os
 import time
 import uuid
 from contextlib import suppress
-from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 from aiogram import Bot
@@ -15,17 +13,14 @@ from aiogram.types import Message
 from redis.exceptions import RedisError
 
 from config import (
-    BOT_TOKEN,
     EXPORT_AUDIO_CROSSFADE_MS,
     EXPORT_AUDIO_MAX_SIZE_MB,
     EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
-    READING_AUDIO_QUEUE_BACKEND,
-    READING_AUDIO_QUEUE_MAX_SIZE,
-    READING_AUDIO_QUEUE_REDIS_KEY,
     READING_SESSION_BACKEND,
     READING_SESSION_TTL_SECONDS,
 )
 from keyboards.reading import reading_navigation_keyboard
+from services import reading_audio_queue
 from services.reading_session_store import (
     cleanup_reading_session,
     finish_generation as _finish_generation,
@@ -72,21 +67,21 @@ from utils.text_checks import is_error_text
 
 logger = logging.getLogger(__name__)
 
-READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = 10.0
-REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = 5
+READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = (
+    reading_audio_queue.READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS
+)
+REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = (
+    reading_audio_queue.REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS
+)
 REDIS_PREFETCH_WAIT_SECONDS = 3.0
-REDIS_AUDIO_QUEUE_PROCESSING_KEY = f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
+REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
 PRIVACY_DELETE_MARKER_PREFIX = "privacy:delete:"
 PRIVACY_DELETE_MARKER_TTL_SECONDS = max(READING_SESSION_TTL_SECONDS, 3600)
 
-AudioGenerationJob = Callable[[], Awaitable[None]]
+AudioGenerationJob = reading_audio_queue.AudioGenerationJob
 ReadingSession = dict[str, object]
-SerializedAudioJob = dict[str, object]
+SerializedAudioJob = reading_audio_queue.SerializedAudioJob
 
-_audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
-_audio_generation_worker_task: asyncio.Task | None = None
-_redis_audio_generation_worker_task: asyncio.Task | None = None
-_redis_audio_queue_recovered = False
 _privacy_delete_markers: dict[int, float] = {}
 
 
@@ -138,24 +133,8 @@ class _TelegramStatusMessageProxy:
         )
 
 
-async def _audio_generation_worker(
-    queue: asyncio.Queue[AudioGenerationJob],
-) -> None:
-    while True:
-        job = await queue.get()
-
-        try:
-            await job()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("ReadingService: background audio generation job failed")
-        finally:
-            queue.task_done()
-
-
 def _use_redis_audio_queue() -> bool:
-    return READING_AUDIO_QUEUE_BACKEND == "redis"
+    return reading_audio_queue.use_redis_audio_queue()
 
 
 def _uses_redis_runtime_state() -> bool:
@@ -244,48 +223,7 @@ async def _should_skip_deleted_user_job(
 
 
 async def purge_queued_audio_jobs_for_user(user_id: int) -> int:
-    if not _use_redis_audio_queue():
-        return 0
-
-    try:
-        client = await get_redis_client()
-        removed_count = await client.eval(
-            """
-            local removed = 0
-
-            for key_index = 1, #KEYS do
-                local key = KEYS[key_index]
-                local items = redis.call("LRANGE", key, 0, -1)
-
-                redis.call("DEL", key)
-
-                for _, item in ipairs(items) do
-                    local ok, job = pcall(cjson.decode, item)
-
-                    if ok and tostring(job["user_id"]) == ARGV[1] then
-                        removed = removed + 1
-                    else
-                        redis.call("RPUSH", key, item)
-                    end
-                end
-            end
-
-            return removed
-            """,
-            2,
-            READING_AUDIO_QUEUE_REDIS_KEY,
-            REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-            str(user_id),
-        )
-
-        return int(removed_count or 0)
-
-    except RedisError:
-        logger.exception(
-            "ReadingService: failed to purge queued audio jobs user_id=%s",
-            user_id,
-        )
-        return 0
+    return await reading_audio_queue.purge_queued_audio_jobs_for_user(user_id)
 
 
 async def cleanup_user_private_runtime_data(user_id: int) -> dict[str, int]:
@@ -320,13 +258,6 @@ def _status_message_id(message: Message | None) -> int | None:
         return message_id
 
     return None
-
-
-def _serialize_audio_job(job: SerializedAudioJob) -> str:
-    payload = dict(job)
-    payload.setdefault("job_id", uuid.uuid4().hex)
-    payload.setdefault("created_at", time.time())
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
@@ -454,181 +385,29 @@ async def _run_serialized_audio_job(bot: Bot, job: SerializedAudioJob) -> None:
     logger.warning("ReadingService: unknown Redis audio job type=%s", job_type)
 
 
-async def _requeue_interrupted_redis_audio_jobs() -> int:
-    global _redis_audio_queue_recovered
-
-    if _redis_audio_queue_recovered:
-        return 0
-
-    client = await get_redis_client()
-    moved_count = 0
-
-    while True:
-        raw_job = await client.rpoplpush(
-            REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-            READING_AUDIO_QUEUE_REDIS_KEY,
-        )
-
-        if raw_job is None:
-            break
-
-        moved_count += 1
-
-    _redis_audio_queue_recovered = True
-
-    if moved_count:
-        logger.warning(
-            "ReadingService: requeued interrupted Redis audio jobs count=%s",
-            moved_count,
-        )
-
-    return moved_count
-
-
-async def _ack_redis_audio_job(raw_job: str) -> None:
-    client = await get_redis_client()
-    await client.lrem(REDIS_AUDIO_QUEUE_PROCESSING_KEY, 1, raw_job)
-
-
-async def _redis_audio_generation_worker() -> None:
-    bot = Bot(BOT_TOKEN)
-
-    try:
-        while True:
-            raw_job = None
-
-            try:
-                client = await get_redis_client()
-                raw_job = await client.brpoplpush(
-                    READING_AUDIO_QUEUE_REDIS_KEY,
-                    REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-                    timeout=REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS,
-                )
-
-                if raw_job is None:
-                    continue
-
-                job = json.loads(raw_job)
-
-                if not isinstance(job, dict):
-                    logger.warning("ReadingService: Redis job is not an object")
-                    await _ack_redis_audio_job(raw_job)
-                    continue
-
-                await _run_serialized_audio_job(bot, job)
-                await _ack_redis_audio_job(raw_job)
-
-            except asyncio.CancelledError:
-                raise
-
-            except (RedisError, json.JSONDecodeError, KeyError, ValueError):
-                logger.exception("ReadingService: Redis audio worker job failed")
-                if raw_job is not None:
-                    with suppress(RedisError):
-                        await _ack_redis_audio_job(raw_job)
-                await asyncio.sleep(1)
-
-            except Exception:
-                logger.exception("ReadingService: Redis audio generation job failed")
-                if raw_job is not None:
-                    with suppress(RedisError):
-                        await _ack_redis_audio_job(raw_job)
-
-    finally:
-        await bot.session.close()
-
-
 async def start_reading_audio_workers() -> None:
-    if not _use_redis_audio_queue():
-        return
-
-    await _requeue_interrupted_redis_audio_jobs()
-    _ensure_redis_audio_generation_worker()
-
-
-def _ensure_redis_audio_generation_worker() -> None:
-    global _redis_audio_generation_worker_task
-
-    if (
-        _redis_audio_generation_worker_task is None
-        or _redis_audio_generation_worker_task.done()
-    ):
-        _redis_audio_generation_worker_task = asyncio.create_task(
-            _redis_audio_generation_worker()
-        )
+    await reading_audio_queue.start_audio_workers(_run_serialized_audio_job)
 
 
 async def _redis_audio_queue_position() -> int:
-    client = await get_redis_client()
-    queue_size = await client.llen(READING_AUDIO_QUEUE_REDIS_KEY)
-    return int(queue_size) + 1
+    return await reading_audio_queue.redis_audio_queue_position()
 
 
 async def _enqueue_redis_audio_job(job: SerializedAudioJob) -> None:
-    await start_reading_audio_workers()
-    client = await get_redis_client()
-
-    queue_size = await client.llen(READING_AUDIO_QUEUE_REDIS_KEY)
-
-    if int(queue_size) >= READING_AUDIO_QUEUE_MAX_SIZE:
-        raise asyncio.QueueFull
-
-    await client.lpush(READING_AUDIO_QUEUE_REDIS_KEY, _serialize_audio_job(job))
+    await reading_audio_queue.enqueue_redis_audio_job(
+        job,
+        _run_serialized_audio_job,
+    )
 
 
 def _ensure_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
-    global _audio_generation_queue
-    global _audio_generation_worker_task
-
-    if _audio_generation_queue is None:
-        _audio_generation_queue = asyncio.Queue(
-            maxsize=READING_AUDIO_QUEUE_MAX_SIZE,
-        )
-
-    if (
-        _audio_generation_worker_task is None
-        or _audio_generation_worker_task.done()
-    ):
-        _audio_generation_worker_task = asyncio.create_task(
-            _audio_generation_worker(_audio_generation_queue)
-        )
-
-    return _audio_generation_queue
+    return reading_audio_queue.ensure_memory_audio_generation_queue()
 
 
 async def close_reading_audio_queue(
     timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
 ) -> None:
-    global _audio_generation_queue
-    global _audio_generation_worker_task
-    global _redis_audio_generation_worker_task
-    global _redis_audio_queue_recovered
-
-    queue = _audio_generation_queue
-    worker_task = _audio_generation_worker_task
-    redis_worker_task = _redis_audio_generation_worker_task
-
-    if queue is not None:
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
-
-    if worker_task is not None and not worker_task.done():
-        worker_task.cancel()
-
-        with suppress(asyncio.CancelledError):
-            await worker_task
-
-    _audio_generation_queue = None
-    _audio_generation_worker_task = None
-
-    if redis_worker_task is not None and not redis_worker_task.done():
-        redis_worker_task.cancel()
-
-        with suppress(asyncio.CancelledError):
-            await redis_worker_task
-
-    _redis_audio_generation_worker_task = None
-    _redis_audio_queue_recovered = False
+    await reading_audio_queue.close_audio_queue(timeout_seconds=timeout_seconds)
 
 
 async def safe_delete_message(message: Message | None) -> None:
@@ -964,7 +743,7 @@ async def export_reading_audio(
         return
 
     chunks = session.get("chunks") or []
-    session_id = session.get("session_id", "legacy")
+    session_id = str(session.get("session_id", "legacy"))
 
     if not chunks:
         await cleanup_session(user_id)
@@ -988,14 +767,13 @@ async def export_reading_audio(
                 )
             )
             await _enqueue_redis_audio_job(
-                {
-                    "type": "export_audio",
-                    "user_id": user_id,
-                    "chat_id": chat_id,
-                    "session_id": session_id,
-                    "status_message_id": _status_message_id(status_msg),
-                    "created_at": job_created_at,
-                }
+                reading_audio_queue.build_export_audio_job(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    session_id=session_id,
+                    status_message_id=_status_message_id(status_msg),
+                    created_at=job_created_at,
+                )
             )
             return
 
@@ -1288,17 +1066,16 @@ async def _start_prefetch_next_chunk(
 
         try:
             await _enqueue_redis_audio_job(
-                {
-                    "type": "prefetch_chunk",
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "chunk_index": next_index,
-                    "chunk_text": next_chunk,
-                    "voice": next_voice,
-                    "rate": rate,
-                    "provider_chain": provider_chain,
-                    "created_at": time.time(),
-                }
+                reading_audio_queue.build_prefetch_chunk_job(
+                    user_id=user_id,
+                    session_id=session_id,
+                    chunk_index=next_index,
+                    chunk_text=next_chunk,
+                    voice=next_voice,
+                    rate=rate,
+                    provider_chain=provider_chain,
+                    created_at=time.time(),
+                )
             )
             return
         except (RedisError, asyncio.QueueFull):
@@ -1492,7 +1269,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
 
     chunks = session.get("chunks") or []
     index = int(session.get("index", 0))
-    session_id = session.get("session_id", "legacy")
+    session_id = str(session.get("session_id", "legacy"))
 
     if not chunks:
         await cleanup_session(user_id)
@@ -1522,14 +1299,13 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
                 )
             )
             await _enqueue_redis_audio_job(
-                {
-                    "type": "send_chunk",
-                    "user_id": user_id,
-                    "chat_id": chat_id,
-                    "session_id": session_id,
-                    "status_message_id": _status_message_id(status_msg),
-                    "created_at": job_created_at,
-                }
+                reading_audio_queue.build_send_chunk_job(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    session_id=session_id,
+                    status_message_id=_status_message_id(status_msg),
+                    created_at=job_created_at,
+                )
             )
             return
 

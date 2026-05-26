@@ -96,6 +96,7 @@ def test_metrics_endpoint_uses_optional_bearer_auth(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+    assert response.json()["audio_queue"]["backend"] == "memory"
     assert response.json()["service_metrics"]["days"] == 7
 
 

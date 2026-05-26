@@ -15,13 +15,13 @@ from config import (
     LOG_SERVICE_NAME,
     METRICS_REDIS_STREAM_ENABLED,
     READING_AUDIO_QUEUE_BACKEND,
-    READING_AUDIO_QUEUE_REDIS_KEY,
     READING_SESSION_BACKEND,
     TELEGRAM_WEBHOOK_PATH,
     TELEGRAM_WEBHOOK_SECRET_TOKEN,
 )
 from database.db import get_admin_stats_snapshot, get_db_connection
 from database.db import get_service_metrics_summary
+from services.reading_audio_queue import get_audio_queue_stats
 from services.redis_client import get_redis_client
 from services.runtime_state import get_runtime_health
 
@@ -105,15 +105,20 @@ async def _check_redis() -> dict[str, Any]:
     client = await get_redis_client()
     await client.ping()
 
-    queue_size = None
+    audio_queue = None
 
     if READING_AUDIO_QUEUE_BACKEND == "redis":
-        queue_size = int(await client.llen(READING_AUDIO_QUEUE_REDIS_KEY))
+        queue_stats = await get_audio_queue_stats()
+
+        if queue_stats.degraded:
+            raise RedisError(queue_stats.error or "audio queue stats degraded")
+
+        audio_queue = queue_stats.as_dict()
 
     return {
         "status": "ok",
         "required": True,
-        "audio_queue_size": queue_size,
+        "audio_queue": audio_queue,
     }
 
 
@@ -218,6 +223,7 @@ def create_app(
         return {
             "service": LOG_SERVICE_NAME,
             "version": APP_VERSION,
+            "audio_queue": (await get_audio_queue_stats()).as_dict(),
             "service_metrics": await get_service_metrics_summary(days=days),
         }
 

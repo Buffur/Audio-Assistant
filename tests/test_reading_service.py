@@ -5,6 +5,7 @@ import pytest_asyncio
 from redis.exceptions import RedisError
 
 from keyboards.reading import READ_SUMMARY_ACTION
+from services import reading_audio_queue
 from services import reading_service
 from services import reading_session_store as store
 
@@ -187,7 +188,7 @@ async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) ->
     async def fake_enqueue(job) -> None:
         captured.update(job)
 
-    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "redis")
     monkeypatch.setattr(
         reading_service,
         "_redis_audio_queue_position",
@@ -236,7 +237,7 @@ async def test_send_audio_chunk_reports_full_redis_queue_without_memory_fallback
     def fail_memory_queue():
         raise AssertionError("full Redis queue must not fall back to memory queue")
 
-    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "redis")
     monkeypatch.setattr(
         reading_service,
         "_redis_audio_queue_position",
@@ -283,7 +284,7 @@ async def test_send_audio_chunk_reports_redis_queue_failure_without_memory_fallb
     def fail_memory_queue():
         raise AssertionError("Redis outage must not fall back to memory queue")
 
-    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "redis")
     monkeypatch.setattr(
         reading_service,
         "_redis_audio_queue_position",
@@ -333,31 +334,35 @@ async def test_enqueue_redis_audio_job_uses_pending_list(monkeypatch) -> None:
             captured["lpush_key"] = key
             captured["payload"] = value
 
-    async def fake_start_workers() -> None:
+    async def fake_start_workers(job_handler) -> None:
         captured["started"] = True
 
     async def fake_get_redis_client():
         return FakeRedis()
 
-    monkeypatch.setattr(reading_service, "start_reading_audio_workers", fake_start_workers)
-    monkeypatch.setattr(reading_service, "get_redis_client", fake_get_redis_client)
+    async def fake_job_handler(bot, job) -> None:
+        return None
 
-    await reading_service._enqueue_redis_audio_job(
+    monkeypatch.setattr(reading_audio_queue, "start_audio_workers", fake_start_workers)
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+
+    await reading_audio_queue.enqueue_redis_audio_job(
         {
             "type": "send_chunk",
             "user_id": 1,
-        }
+        },
+        fake_job_handler,
     )
 
     assert captured["started"] is True
-    assert captured["llen_key"] == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
-    assert captured["lpush_key"] == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["llen_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["lpush_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
     assert '"type":"send_chunk"' in captured["payload"]
 
 
 def test_serialize_audio_job_adds_unique_job_id() -> None:
-    first = json.loads(reading_service._serialize_audio_job({"type": "send_chunk"}))
-    second = json.loads(reading_service._serialize_audio_job({"type": "send_chunk"}))
+    first = json.loads(reading_audio_queue.serialize_audio_job({"type": "send_chunk"}))
+    second = json.loads(reading_audio_queue.serialize_audio_job({"type": "send_chunk"}))
 
     assert first["job_id"]
     assert second["job_id"]
@@ -372,8 +377,8 @@ async def test_requeue_interrupted_redis_audio_jobs(monkeypatch) -> None:
             self.pending = []
 
         async def rpoplpush(self, source: str, destination: str):
-            assert source == reading_service.REDIS_AUDIO_QUEUE_PROCESSING_KEY
-            assert destination == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
+            assert source == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+            assert destination == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
 
             if not self.processing:
                 return None
@@ -387,10 +392,10 @@ async def test_requeue_interrupted_redis_audio_jobs(monkeypatch) -> None:
     async def fake_get_redis_client():
         return fake_redis
 
-    monkeypatch.setattr(reading_service, "get_redis_client", fake_get_redis_client)
-    reading_service._redis_audio_queue_recovered = False
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+    reading_audio_queue._redis_audio_queue_recovered = False
 
-    moved_count = await reading_service._requeue_interrupted_redis_audio_jobs()
+    moved_count = await reading_audio_queue.requeue_interrupted_redis_audio_jobs()
 
     assert moved_count == 2
     assert fake_redis.processing == []
