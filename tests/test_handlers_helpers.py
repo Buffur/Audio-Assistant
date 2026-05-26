@@ -508,3 +508,18 @@ def test_reading_callback_session_matching() -> None:
     assert reading_callbacks._is_matching_session(session, None) is True
     assert reading_callbacks._is_matching_session(session, "current") is True
     assert reading_callbacks._is_matching_session(session, "old") is False
+
+
+def test_reading_callback_catalog_document_id_parsing() -> None:
+    assert reading_callbacks._get_catalog_document_id(
+        1,
+        {"catalog_document_id": "42"},
+    ) == 42
+    assert reading_callbacks._get_catalog_document_id(
+        1,
+        {"catalog_document_id": None},
+    ) is None
+    assert reading_callbacks._get_catalog_document_id(
+        1,
+        {"catalog_document_id": "invalid"},
+    ) is None

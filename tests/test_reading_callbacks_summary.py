@@ -395,7 +395,11 @@ async def test_read_summary_does_not_duplicate_already_delivered_summary(
     async def fail_async(*args, **kwargs):
         raise AssertionError("delivered summary must not regenerate work")
 
-    monkeypatch.setattr(reading_callbacks, "try_start_generation", fail_async)
+    monkeypatch.setattr(
+        reading_callbacks,
+        "try_start_reading_generation",
+        fail_async,
+    )
     monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
     monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
     monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)

@@ -22,16 +22,17 @@ from services.document_history_service import (
 )
 from services.parser import summarize_text_with_ai
 from services.reading_service import (
+    ReadingSession,
     cleanup_session,
     export_reading_audio,
-    finish_reading_generation as finish_generation,
-    get_current_reading_session as get_reading_session,
-    has_current_reading_session as has_reading_session,
+    finish_reading_generation,
+    get_current_reading_session,
+    has_current_reading_session,
     reply_with_voice,
     safe_delete_message,
     send_audio_chunk,
-    try_start_reading_generation as try_start_generation,
-    update_current_reading_session as update_reading_session,
+    try_start_reading_generation,
+    update_current_reading_session,
 )
 from services.tts import generate_voice
 from services.usage_limits_service import (
@@ -75,7 +76,7 @@ logger = logging.getLogger(__name__)
 class ReadingCallbackContext:
     user_id: int
     callback_session_id: str | None
-    session: dict
+    session: ReadingSession
 
 
 async def _refund_reserved_summary(user_id: int) -> None:
@@ -89,7 +90,7 @@ async def _refund_reserved_summary(user_id: int) -> None:
 
 
 def _is_matching_session(
-    session: dict,
+    session: ReadingSession,
     callback_session_id: str | None,
 ) -> bool:
     """
@@ -127,7 +128,7 @@ async def _get_reading_callback_context(
         return None
 
     user_id, callback_session_id = identity
-    session = await get_reading_session(user_id)
+    session = await get_current_reading_session(user_id)
 
     if not session:
         await callback.answer(
@@ -169,7 +170,7 @@ async def _safe_edit_reply_markup(
         )
 
 
-def _get_cached_summary_text(session: dict) -> str | None:
+def _get_cached_summary_text(session: ReadingSession) -> str | None:
     summary_text = session.get("summary_text")
 
     if not isinstance(summary_text, str):
@@ -180,7 +181,7 @@ def _get_cached_summary_text(session: dict) -> str | None:
     return summary_text or None
 
 
-def _get_summary_voice_file_ids(session: dict) -> list[str]:
+def _get_summary_voice_file_ids(session: ReadingSession) -> list[str]:
     file_ids = session.get("summary_voice_file_ids") or []
 
     if not isinstance(file_ids, list):
@@ -190,7 +191,7 @@ def _get_summary_voice_file_ids(session: dict) -> list[str]:
 
 
 def _summary_voice_matches(
-    session: dict,
+    session: ReadingSession,
     *,
     voice: str,
     rate: str,
@@ -203,7 +204,7 @@ def _summary_voice_matches(
     )
 
 
-def _summary_has_next(session: dict) -> bool:
+def _summary_has_next(session: ReadingSession) -> bool:
     chunks = session.get("chunks") or []
     current_index = int(session.get("index", 0))
 
@@ -211,7 +212,7 @@ def _summary_has_next(session: dict) -> bool:
 
 
 def _summary_keyboard(
-    session: dict,
+    session: ReadingSession,
     callback_session_id: str | None,
 ):
     session_id = session.get("session_id", callback_session_id or "legacy")
@@ -233,27 +234,37 @@ async def _get_summary_audio_settings(
     return voice, rate, provider
 
 
-async def _save_session_summary_audio_to_catalog(
+def _get_catalog_document_id(
     user_id: int,
-    session: dict,
-    voice_file_ids: list[str],
-    voice: str,
-    rate: str,
-    provider: str,
-) -> None:
+    session: ReadingSession,
+) -> int | None:
     document_id = session.get("catalog_document_id")
 
     if document_id is None:
-        return
+        return None
 
     try:
-        document_id = int(document_id)
+        return int(document_id)
     except (TypeError, ValueError):
         logger.warning(
             "ReadingCallbacks: invalid catalog_document_id=%s user_id=%s",
             document_id,
             user_id,
         )
+        return None
+
+
+async def _save_session_summary_audio_to_catalog(
+    user_id: int,
+    session: ReadingSession,
+    voice_file_ids: list[str],
+    voice: str,
+    rate: str,
+    provider: str,
+) -> None:
+    document_id = _get_catalog_document_id(user_id, session)
+
+    if document_id is None:
         return
 
     await save_catalog_document_summary_audio(
@@ -268,7 +279,7 @@ async def _save_session_summary_audio_to_catalog(
 
 async def _mark_summary_delivered(
     user_id: int,
-    session: dict,
+    session: ReadingSession,
     *,
     voice_file_ids: list[str] | None = None,
     voice: str | None = None,
@@ -287,14 +298,14 @@ async def _mark_summary_delivered(
             "summary_voice_provider": provider,
         })
 
-    await update_reading_session(user_id, **updates)
+    await update_current_reading_session(user_id, **updates)
     session.update(updates)
 
 
 async def _send_cached_summary(
     callback: types.CallbackQuery,
     user_id: int,
-    session: dict,
+    session: ReadingSession,
     summary_text: str,
     already_delivered: bool,
     callback_session_id: str | None,
@@ -315,7 +326,7 @@ async def _send_cached_summary(
         await callback.answer(SUMMARY_ALREADY_SENT_TEXT, show_alert=True)
         return
 
-    if not await try_start_generation(user_id):
+    if not await try_start_reading_generation(user_id):
         await callback.answer(
             WAIT_PROCESSING_TEXT,
             show_alert=True,
@@ -449,28 +460,18 @@ async def _send_cached_summary(
             )
 
     finally:
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
 
 
 async def _save_session_summary_to_catalog(
     user_id: int,
-    session: dict,
+    session: ReadingSession,
     summary_text: str,
 ) -> None:
-    document_id = session.get("catalog_document_id")
+    document_id = _get_catalog_document_id(user_id, session)
 
     if document_id is None:
-        return
-
-    try:
-        document_id = int(document_id)
-    except (TypeError, ValueError):
-        logger.warning(
-            "ReadingCallbacks: invalid catalog_document_id=%s user_id=%s",
-            document_id,
-            user_id,
-        )
         return
 
     await save_catalog_document_summary(
@@ -499,7 +500,7 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
 
     show_summary_button = not bool(session.get("summary_delivered"))
 
-    if not await try_start_generation(user_id):
+    if not await try_start_reading_generation(user_id):
         await callback.answer(
             WAIT_AUDIO_PROCESSING_TEXT,
             show_alert=True,
@@ -521,8 +522,8 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
         await _safe_edit_reply_markup(callback, reply_markup=None)
 
     if not callback.message:
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
         return
 
     try:
@@ -540,8 +541,8 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
                 "❌ Сталася помилка під час генерації наступної частини."
             )
 
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
 
 
 @router.callback_query(F.data.startswith(READ_SUMMARY_ACTION))
@@ -574,7 +575,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         )
         return
 
-    if not await try_start_generation(user_id):
+    if not await try_start_reading_generation(user_id):
         await callback.answer(
             WAIT_PROCESSING_TEXT,
             show_alert=True,
@@ -706,7 +707,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
 
         summary_reserved = False
 
-        await update_reading_session(
+        await update_current_reading_session(
             user_id,
             summary_text=summary_text,
             summary_delivered=False,
@@ -761,8 +762,8 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             )
 
     finally:
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
 
 
 @router.callback_query(F.data.startswith(READ_EXPORT_AUDIO_ACTION))
@@ -785,7 +786,7 @@ async def process_read_export_audio(callback: types.CallbackQuery) -> None:
         )
         return
 
-    if not await try_start_generation(user_id):
+    if not await try_start_reading_generation(user_id):
         await callback.answer(
             WAIT_AUDIO_PROCESSING_TEXT,
             show_alert=True,
@@ -798,8 +799,8 @@ async def process_read_export_audio(callback: types.CallbackQuery) -> None:
             show_alert=True,
         )
 
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
 
         return
 
@@ -817,8 +818,8 @@ async def process_read_export_audio(callback: types.CallbackQuery) -> None:
             user_id,
         )
 
-        if await has_reading_session(user_id):
-            await finish_generation(user_id)
+        if await has_current_reading_session(user_id):
+            await finish_reading_generation(user_id)
 
         await callback.message.answer(EXPORT_AUDIO_GENERATION_ERROR)
 
@@ -835,7 +836,7 @@ async def process_read_stop(callback: types.CallbackQuery) -> None:
 
     user_id, callback_session_id = identity
 
-    session = await get_reading_session(user_id)
+    session = await get_current_reading_session(user_id)
 
     if session and not _is_matching_session(session, callback_session_id):
         await callback.answer(

@@ -80,6 +80,7 @@ PRIVACY_DELETE_MARKER_PREFIX = "privacy:delete:"
 PRIVACY_DELETE_MARKER_TTL_SECONDS = max(READING_SESSION_TTL_SECONDS, 3600)
 
 AudioGenerationJob = Callable[[], Awaitable[None]]
+ReadingSession = dict[str, object]
 SerializedAudioJob = dict[str, object]
 
 _audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
@@ -650,7 +651,7 @@ async def safe_edit_message(message: Message | None, text: str) -> None:
         await message.edit_text(text)
 
 
-def _is_same_session(session: dict | None, session_id: str | None) -> bool:
+def _is_same_session(session: ReadingSession | None, session_id: str | None) -> bool:
     if not session:
         return False
 
@@ -699,8 +700,8 @@ def create_reading_session(
     summary_voice_voice: str | None = None,
     summary_voice_rate: str | None = None,
     summary_voice_provider: str | None = None,
-) -> dict:
-    session = {
+) -> ReadingSession:
+    session: ReadingSession = {
         "session_id": uuid.uuid4().hex[:12],
         "chunks": chunks,
         "index": 0,
@@ -732,7 +733,7 @@ async def is_audio_generation_active(user_id: int) -> bool:
     return bool(session and session.get("is_generating"))
 
 
-async def get_current_reading_session(user_id: int) -> dict | None:
+async def get_current_reading_session(user_id: int) -> ReadingSession | None:
     return await get_reading_session(user_id)
 
 
@@ -748,7 +749,7 @@ async def finish_reading_generation(user_id: int) -> None:
     await _finish_generation(user_id)
 
 
-async def update_current_reading_session(user_id: int, **updates) -> None:
+async def update_current_reading_session(user_id: int, **updates: object) -> None:
     await update_reading_session(user_id, **updates)
 
 
@@ -763,7 +764,7 @@ async def start_reading_session(
     summary_voice_rate: str | None = None,
     summary_voice_provider: str | None = None,
     cleanup_existing: bool = True,
-) -> dict:
+) -> ReadingSession:
     if cleanup_existing:
         await cleanup_session(user_id)
 
@@ -1108,7 +1109,7 @@ async def _get_audio_from_prefetch_or_generate(
     *,
     message: Message,
     user_id: int,
-    session: dict,
+    session: ReadingSession,
     chunk_text: str,
     voice: str,
     rate: str,
