@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 
 import pytest
 import pytest_asyncio
@@ -71,6 +72,107 @@ async def test_redis_reading_session_roundtrip_and_generation_lock(
     assert updated_session["index"] == 1
     assert updated_session["is_generating"] is False
     assert updated_session["summary_delivered"] is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_redis_reading_session_recovers_stale_generation_lock(
+    redis_test_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(store, "READING_SESSION_BACKEND", "redis")
+    stale_started_at = time.time() - store.GENERATION_STALE_SECONDS - 1
+
+    await store.set_reading_session(
+        user_id=10,
+        session={
+            "session_id": "redis-stale-generation",
+            "chunks": ["one"],
+            "index": 0,
+            "is_generating": True,
+            "generation_started_at": stale_started_at,
+            "updated_at": stale_started_at,
+        },
+    )
+
+    assert await store.try_start_generation(10) is True
+
+    session = await store.get_reading_session(10)
+
+    assert session["is_generating"] is True
+    assert session["generation_started_at"] > stale_started_at
+    assert session["generation_recovered_at"] > stale_started_at
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_redis_reading_session_preserves_empty_list_fields_after_lua_update(
+    redis_test_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(store, "READING_SESSION_BACKEND", "redis")
+
+    await store.set_reading_session(
+        user_id=11,
+        session={
+            "session_id": "redis-empty-list-session",
+            "chunks": ["one", "two"],
+            "index": 1,
+            "is_generating": False,
+        },
+    )
+
+    await store.update_reading_session(
+        11,
+        prefetch_state="queued",
+        prefetch_index=1,
+        prefetch_audio_files=[],
+        prefetch_error="",
+    )
+
+    raw_session = await redis_test_client.get(f"{store.SESSION_KEY_PREFIX}11")
+    payload = json.loads(raw_session)
+
+    assert payload.get("prefetch_audio_files") is None
+
+    session = await store.get_reading_session(11)
+
+    assert session is not None
+    assert session.get("prefetch_audio_files") in (None, [])
+    assert session["session_id"] == "redis-empty-list-session"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_redis_generation_lock_does_not_corrupt_empty_list_fields(
+    redis_test_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(store, "READING_SESSION_BACKEND", "redis")
+
+    await store.set_reading_session(
+        user_id=12,
+        session={
+            "session_id": "redis-empty-list-lock",
+            "chunks": ["one", "two"],
+            "index": 1,
+            "is_generating": False,
+            "prefetch_audio_files": [],
+        },
+    )
+
+    assert await store.try_start_generation(12) is True
+
+    raw_session = await redis_test_client.get(f"{store.SESSION_KEY_PREFIX}12")
+    payload = json.loads(raw_session)
+
+    assert payload.get("prefetch_audio_files") is None
+
+    session = await store.get_reading_session(12)
+
+    assert session is not None
+    assert session["session_id"] == "redis-empty-list-lock"
+    assert session["is_generating"] is True
 
 
 @pytest.mark.integration

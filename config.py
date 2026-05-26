@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_BACKEND: str = "memory"
 
     READING_SESSION_TTL_SECONDS: int = 45 * 60
+    READING_GENERATION_STALE_SECONDS: int = 45 * 60 // 2
     READING_SESSION_BACKEND: str = "redis"
     READING_AUDIO_QUEUE_BACKEND: str = "redis"
     READING_AUDIO_QUEUE_REDIS_KEY: str = "reading:audio:queue"
@@ -214,6 +215,7 @@ class Settings(BaseSettings):
         "RATE_LIMIT_PERIOD_SECONDS",
         "RATE_LIMIT_WARNING_COOLDOWN_SECONDS",
         "READING_SESSION_TTL_SECONDS",
+        "READING_GENERATION_STALE_SECONDS",
         "READING_AUDIO_QUEUE_MAX_SIZE",
         "EXPORT_AUDIO_MAX_SIZE_MB",
         "EXPORT_AUDIO_CROSSFADE_MS",
@@ -448,6 +450,16 @@ class Settings(BaseSettings):
 
         return value
 
+    @model_validator(mode="after")
+    def _validate_reading_generation_stale_before_session_ttl(self) -> "Settings":
+        if self.READING_GENERATION_STALE_SECONDS >= self.READING_SESSION_TTL_SECONDS:
+            raise ValueError(
+                "READING_GENERATION_STALE_SECONDS must be lower than "
+                "READING_SESSION_TTL_SECONDS"
+            )
+
+        return self
+
 
 def _load_settings() -> Settings:
     try:
@@ -518,6 +530,7 @@ RATE_LIMIT_WARNING_COOLDOWN_SECONDS = (
 RATE_LIMIT_BACKEND = settings.RATE_LIMIT_BACKEND
 
 READING_SESSION_TTL_SECONDS = settings.READING_SESSION_TTL_SECONDS
+READING_GENERATION_STALE_SECONDS = settings.READING_GENERATION_STALE_SECONDS
 READING_SESSION_BACKEND = settings.READING_SESSION_BACKEND
 READING_AUDIO_QUEUE_BACKEND = settings.READING_AUDIO_QUEUE_BACKEND
 READING_AUDIO_QUEUE_REDIS_KEY = settings.READING_AUDIO_QUEUE_REDIS_KEY

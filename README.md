@@ -104,6 +104,7 @@ docker compose up --build
 | `TTS_PROVIDER` | Ні | Основний TTS provider. За замовчуванням `edge`. |
 | `TTS_PROVIDER_CHAIN` | Ні | Fallback-ланцюжок TTS. За замовчуванням `edge`. |
 | `READING_SESSION_BACKEND` | Ні | Де зберігати активні reading-сесії: `memory` або `redis`. |
+| `READING_GENERATION_STALE_SECONDS` | Ні | Через скільки секунд завислий `is_generating=True` lock вважається stale і може бути відновлений. |
 | `READING_AUDIO_QUEUE_BACKEND` | Ні | Черга генерації озвучки: `memory` або `redis`. |
 | `API_ENABLED` | Ні | Вмикає lightweight API поруч із polling-ботом. |
 | `API_AUTH_TOKEN` | Рекомендовано | Bearer token для `/metrics` і `/admin/stats`. |

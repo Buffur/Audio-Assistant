@@ -72,6 +72,23 @@ class RedisReadingSessionRepository:
             client = await self._client()
             result = await client.eval(
                 """
+                local function remove_empty_optional_lists(session)
+                    local fields = {
+                        "prefetch_audio_files",
+                        "summary_voice_file_ids"
+                    }
+
+                    for _, field in ipairs(fields) do
+                        local value = session[field]
+
+                        if value == cjson.null then
+                            session[field] = nil
+                        elseif type(value) == "table" and next(value) == nil then
+                            session[field] = nil
+                        end
+                    end
+                end
+
                 local raw_session = redis.call("GET", KEYS[1])
                 if not raw_session then
                     redis.call("SREM", KEYS[2], ARGV[1])
@@ -98,6 +115,7 @@ class RedisReadingSessionRepository:
                 session["is_generating"] = true
                 session["updated_at"] = tonumber(ARGV[2])
                 session["generation_started_at"] = tonumber(ARGV[2])
+                remove_empty_optional_lists(session)
                 redis.call("SETEX", KEYS[1], tonumber(ARGV[3]), cjson.encode(session))
                 redis.call("SADD", KEYS[2], ARGV[1])
                 return 1
@@ -130,6 +148,23 @@ class RedisReadingSessionRepository:
             client = await self._client()
             result = await client.eval(
                 """
+                local function remove_empty_optional_lists(session)
+                    local fields = {
+                        "prefetch_audio_files",
+                        "summary_voice_file_ids"
+                    }
+
+                    for _, field in ipairs(fields) do
+                        local value = session[field]
+
+                        if value == cjson.null then
+                            session[field] = nil
+                        elseif type(value) == "table" and next(value) == nil then
+                            session[field] = nil
+                        end
+                    end
+                end
+
                 local raw_session = redis.call("GET", KEYS[1])
                 if not raw_session then
                     redis.call("SREM", KEYS[2], ARGV[1])
@@ -143,6 +178,7 @@ class RedisReadingSessionRepository:
                     session[key] = value
                 end
 
+                remove_empty_optional_lists(session)
                 redis.call("SETEX", KEYS[1], tonumber(ARGV[3]), cjson.encode(session))
                 redis.call("SADD", KEYS[2], ARGV[1])
                 return 1

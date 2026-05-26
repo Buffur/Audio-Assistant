@@ -6,7 +6,7 @@ import time
 from contextlib import suppress
 from typing import Any
 
-from config import READING_SESSION_TTL_SECONDS
+from config import READING_GENERATION_STALE_SECONDS, READING_SESSION_TTL_SECONDS
 from services.reading.domain.models import (
     InvalidReadingSessionError,
     ReadingSession,
@@ -15,10 +15,7 @@ from services.reading.domain.models import (
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = READING_SESSION_TTL_SECONDS
-GENERATION_STALE_SECONDS = min(
-    max(READING_SESSION_TTL_SECONDS // 2, 10 * 60),
-    30 * 60,
-)
+GENERATION_STALE_SECONDS = READING_GENERATION_STALE_SECONDS
 SESSION_KEY_PREFIX = "reading:session:"
 SESSION_USERS_KEY = "reading:sessions:users"
 

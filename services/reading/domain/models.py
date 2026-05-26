@@ -129,8 +129,17 @@ def _optional_boolean(raw: Mapping[str, Any], key: str) -> bool | None:
     return _boolean(raw, key)
 
 
-def _string_list(raw: Mapping[str, Any], key: str, default: list[str] | None = None) -> list[str]:
+def _string_list(
+    raw: Mapping[str, Any],
+    key: str,
+    default: list[str] | None = None,
+    *,
+    allow_redis_empty_object: bool = False,
+) -> list[str]:
     value = raw.get(key, default if default is not None else [])
+
+    if allow_redis_empty_object and isinstance(value, Mapping) and not value:
+        return []
 
     if not isinstance(value, list):
         raise InvalidReadingSessionError(f"{key} must be a list")
@@ -145,7 +154,7 @@ def _optional_string_list(raw: Mapping[str, Any], key: str) -> list[str] | None:
     if key not in raw or raw.get(key) is None:
         return None
 
-    return _string_list(raw, key)
+    return _string_list(raw, key, allow_redis_empty_object=True)
 
 
 def _extra_fields(raw: Mapping[str, Any]) -> dict[str, Any]:

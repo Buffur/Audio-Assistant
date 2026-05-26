@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 
 from handlers import reading_callbacks
+from services.reading.application import callback_flow_service
 from keyboards.reading import (
     READ_NEXT_ACTION,
     READ_SUMMARY_ACTION,
@@ -158,48 +159,48 @@ async def test_read_summary_generates_once_and_caches_summary(monkeypatch) -> No
         return True
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "reserve_summary_generation",
         fake_reserve_summary_generation,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "summarize_text_with_ai",
         fake_summarize_text_with_ai,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_settings",
         fake_get_effective_user_settings,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_tts_provider",
         fake_get_effective_user_tts_provider,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "is_premium_user",
         fake_is_premium_user,
     )
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fake_generate_voice)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fake_generate_voice)
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "send_voice_files",
         fake_send_voice_files,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "save_catalog_document_summary",
         fake_save_catalog_document_summary,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "save_catalog_document_summary_audio",
         fake_save_catalog_document_summary_audio,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "select_voice_for_text",
         lambda text, voice_pref: "uk-UA-PolinaNeural",
     )
@@ -253,8 +254,8 @@ async def test_read_summary_uses_cached_text_for_tts_without_ai_or_quota(
     async def fail_async(*args, **kwargs):
         raise AssertionError("cached summary path must not regenerate work")
 
-    monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
-    monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
+    monkeypatch.setattr(callback_flow_service, "reserve_summary_generation", fail_async)
+    monkeypatch.setattr(callback_flow_service, "summarize_text_with_ai", fail_async)
 
     async def fake_get_effective_user_settings(user_id: int):
         return "uk-UA-PolinaNeural", "+0%"
@@ -271,22 +272,22 @@ async def test_read_summary_uses_cached_text_for_tts_without_ai_or_quota(
         return ["cached-summary-file-id"]
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_settings",
         fake_get_effective_user_settings,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_tts_provider",
         fake_get_effective_user_tts_provider,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "select_voice_for_text",
         lambda text, voice_pref: "uk-UA-PolinaNeural",
     )
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fake_generate_voice)
-    monkeypatch.setattr(reading_callbacks, "send_voice_files", fake_send_voice_files)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fake_generate_voice)
+    monkeypatch.setattr(callback_flow_service, "send_voice_files", fake_send_voice_files)
 
     callback = FakeCallback()
 
@@ -338,26 +339,26 @@ async def test_read_summary_reuses_cached_voice_file_id(monkeypatch) -> None:
         captured["caption"] = kwargs["caption"]
         return ["telegram-file-id"]
 
-    monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
-    monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+    monkeypatch.setattr(callback_flow_service, "reserve_summary_generation", fail_async)
+    monkeypatch.setattr(callback_flow_service, "summarize_text_with_ai", fail_async)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fail_async)
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_settings",
         fake_get_effective_user_settings,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_tts_provider",
         fake_get_effective_user_tts_provider,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "select_voice_for_text",
         lambda text, voice_pref: "uk-UA-PolinaNeural",
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "send_voice_file_ids",
         fake_send_voice_file_ids,
     )
@@ -396,13 +397,13 @@ async def test_read_summary_does_not_duplicate_already_delivered_summary(
         raise AssertionError("delivered summary must not regenerate work")
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "try_start_reading_generation",
         fail_async,
     )
-    monkeypatch.setattr(reading_callbacks, "reserve_summary_generation", fail_async)
-    monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+    monkeypatch.setattr(callback_flow_service, "reserve_summary_generation", fail_async)
+    monkeypatch.setattr(callback_flow_service, "summarize_text_with_ai", fail_async)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fail_async)
 
     callback = FakeCallback()
 
@@ -439,12 +440,12 @@ async def test_read_summary_limit_rejection_releases_generation_flag(
         raise AssertionError("summary limit rejection must stop before AI/TTS")
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "reserve_summary_generation",
         fake_reserve_summary_generation,
     )
-    monkeypatch.setattr(reading_callbacks, "summarize_text_with_ai", fail_async)
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+    monkeypatch.setattr(callback_flow_service, "summarize_text_with_ai", fail_async)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fail_async)
 
     callback = FakeCallback()
 
@@ -490,21 +491,21 @@ async def test_read_summary_refunds_limit_when_ai_returns_error(monkeypatch) -> 
         raise AssertionError("AI error must stop before TTS")
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "reserve_summary_generation",
         fake_reserve_summary_generation,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "refund_summary_generation",
         fake_refund_summary_generation,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "summarize_text_with_ai",
         fake_summarize_text_with_ai,
     )
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fail_async)
 
     callback = FakeCallback()
 
@@ -558,36 +559,36 @@ async def test_read_summary_refunds_limit_when_tts_fails(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "reserve_summary_generation",
         fake_reserve_summary_generation,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "refund_summary_generation",
         fake_refund_summary_generation,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "summarize_text_with_ai",
         fake_summarize_text_with_ai,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_settings",
         fake_get_effective_user_settings,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "get_effective_user_tts_provider",
         fake_get_effective_user_tts_provider,
     )
     monkeypatch.setattr(
-        reading_callbacks,
+        callback_flow_service,
         "select_voice_for_text",
         lambda text, voice_pref: "uk-UA-PolinaNeural",
     )
-    monkeypatch.setattr(reading_callbacks, "generate_voice", fake_generate_voice)
+    monkeypatch.setattr(callback_flow_service, "generate_voice", fake_generate_voice)
 
     callback = FakeCallback()
 
@@ -631,8 +632,8 @@ async def test_read_next_keeps_summary_button_until_cached_summary_is_shown(
     async def fake_send_audio_chunk(message, user_id) -> None:
         captured["sent"] = True
 
-    monkeypatch.setattr(reading_callbacks, "is_premium_user", fake_is_premium_user)
-    monkeypatch.setattr(reading_callbacks, "send_audio_chunk", fake_send_audio_chunk)
+    monkeypatch.setattr(callback_flow_service, "is_premium_user", fake_is_premium_user)
+    monkeypatch.setattr(callback_flow_service, "send_audio_chunk", fake_send_audio_chunk)
 
     callback = FakeCallback(action=READ_NEXT_ACTION)
 

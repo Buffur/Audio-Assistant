@@ -68,13 +68,36 @@ def test_reading_backends_support_memory_and_redis() -> None:
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
         READING_SESSION_BACKEND="memory",
+        READING_GENERATION_STALE_SECONDS=120,
         READING_AUDIO_QUEUE_BACKEND="redis",
         READING_AUDIO_QUEUE_MAX_SIZE=5,
     )
 
     assert settings.READING_SESSION_BACKEND == "memory"
+    assert settings.READING_GENERATION_STALE_SECONDS == 120
     assert settings.READING_AUDIO_QUEUE_BACKEND == "redis"
     assert settings.READING_AUDIO_QUEUE_MAX_SIZE == 5
+
+
+def test_reading_generation_stale_seconds_rejects_zero() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            READING_GENERATION_STALE_SECONDS=0,
+        )
+
+
+def test_reading_generation_stale_seconds_must_be_lower_than_session_ttl() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            READING_SESSION_TTL_SECONDS=60,
+            READING_GENERATION_STALE_SECONDS=60,
+        )
 
 
 def test_log_format_rejects_unknown_value() -> None:
