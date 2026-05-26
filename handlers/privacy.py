@@ -4,6 +4,13 @@ from aiogram.types import CallbackQuery, Message
 
 from config import DOCUMENT_HISTORY_RETENTION_DAYS
 from database.db import delete_user_private_data
+from handlers.callback_guards import (
+    CALLBACK_OWNER_MISMATCH_TEXT,
+    USER_MISSING_TEXT,
+    callback_user_id,
+    message_user_id,
+    parsed_callback_owner_matches,
+)
 from keyboards.privacy import (
     DELETE_MY_DATA_CANCEL_CALLBACK,
     DELETE_MY_DATA_CONFIRM_CALLBACK,
@@ -20,14 +27,12 @@ from texts.privacy import (
 
 router = Router()
 
-CALLBACK_OWNER_MISMATCH_TEXT = "Ця кнопка належить іншому користувачу."
-
 
 def _callback_owner_matches(callback: CallbackQuery) -> bool:
-    user_id = callback.from_user.id if callback.from_user else None
-    owner_id = parse_delete_my_data_callback_user_id(callback.data)
-
-    return owner_id is None or owner_id == user_id
+    return parsed_callback_owner_matches(
+        callback,
+        parse_delete_my_data_callback_user_id,
+    )
 
 
 @router.message(Command("privacy"))
@@ -40,10 +45,10 @@ async def privacy_handler(message: Message) -> None:
 
 @router.message(Command("delete_my_data"))
 async def delete_my_data_handler(message: Message) -> None:
-    user_id = message.from_user.id if message.from_user else None
+    user_id = message_user_id(message)
 
     if user_id is None:
-        await message.answer("Не вдалося визначити користувача.")
+        await message.answer(USER_MISSING_TEXT)
         return
 
     await message.answer(
@@ -55,10 +60,10 @@ async def delete_my_data_handler(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(DELETE_MY_DATA_CONFIRM_CALLBACK))
 async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
+    user_id = callback_user_id(callback)
 
     if user_id is None:
-        await callback.answer("Не вдалося визначити користувача.", show_alert=True)
+        await callback.answer(USER_MISSING_TEXT, show_alert=True)
         return
 
     if not _callback_owner_matches(callback):

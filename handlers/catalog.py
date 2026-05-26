@@ -7,6 +7,13 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from handlers.callback_guards import (
+    CALLBACK_OWNER_MISMATCH_TEXT,
+    callback_owner_matches,
+    callback_user_id,
+    message_user_id,
+    require_callback_message,
+)
 from keyboards.catalog import (
     CATALOG_CLEAR_CANCEL_CALLBACK,
     CATALOG_CLEAR_CONFIRM_CALLBACK,
@@ -58,20 +65,15 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 CATALOG_PAGE_SIZE = DEFAULT_HISTORY_LIMIT
-CALLBACK_OWNER_MISMATCH_TEXT = "Ця кнопка належить іншому користувачу."
-CALLBACK_MESSAGE_MISSING_TEXT = "Не вдалося знайти повідомлення для цієї дії."
 
 
 def _callback_owner_matches(
     callback: types.CallbackQuery,
     prefix: str,
 ) -> bool:
-    if callback.from_user is None:
-        return False
-
     owner_id = parse_catalog_callback_user_id(callback.data, prefix)
 
-    return owner_id is None or owner_id == callback.from_user.id
+    return callback_owner_matches(callback, owner_id)
 
 
 def _generate_session_id() -> str:
@@ -215,10 +217,11 @@ async def catalog_handler(message: Message) -> None:
     """
     Показує каталог останніх матеріалів користувача.
     """
-    if message.from_user is None:
+    user_id = message_user_id(message)
+
+    if user_id is None:
         return
 
-    user_id = message.from_user.id
     await _send_catalog(message, user_id)
 
 
@@ -227,14 +230,16 @@ async def catalog_page_callback(callback: types.CallbackQuery) -> None:
     """
     Перемикає сторінки каталогу в тому самому повідомленні.
     """
-    if callback.from_user is None:
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
         return
 
-    if callback.message is None:
-        await callback.answer(CALLBACK_MESSAGE_MISSING_TEXT, show_alert=True)
+    message = await require_callback_message(callback)
+
+    if message is None:
         return
 
-    user_id = callback.from_user.id
     page = parse_catalog_page(callback.data, CATALOG_PAGE_PREFIX)
 
     if page is None:
@@ -242,7 +247,7 @@ async def catalog_page_callback(callback: types.CallbackQuery) -> None:
         return
 
     await _refresh_catalog_message(
-        message=callback.message,
+        message=message,
         user_id=user_id,
         page=page,
     )
@@ -255,10 +260,10 @@ async def catalog_clear_handler(message: Message) -> None:
     """
     Просить підтвердження перед очищенням каталогу матеріалів користувача.
     """
-    if message.from_user is None:
-        return
+    user_id = message_user_id(message)
 
-    user_id = message.from_user.id
+    if user_id is None:
+        return
 
     await message.answer(
         CATALOG_CLEAR_CONFIRM_TEXT,
@@ -268,10 +273,10 @@ async def catalog_clear_handler(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(CATALOG_CLEAR_CONFIRM_CALLBACK))
 async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
-    if callback.from_user is None:
-        return
+    user_id = callback_user_id(callback)
 
-    user_id = callback.from_user.id
+    if user_id is None:
+        return
 
     if not _callback_owner_matches(callback, CATALOG_CLEAR_CONFIRM_CALLBACK):
         await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
@@ -322,14 +327,15 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
     """
     Відкриває документ із каталогу і створює нову reading session.
     """
-    if callback.from_user is None:
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
         return
 
-    if callback.message is None:
-        await callback.answer(CALLBACK_MESSAGE_MISSING_TEXT, show_alert=True)
-        return
+    message = await require_callback_message(callback)
 
-    user_id = callback.from_user.id
+    if message is None:
+        return
 
     document_id = parse_catalog_document_id(
         callback_data=callback.data,
@@ -358,7 +364,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     await callback.answer("Відкриваю документ...")
 
-    status_msg = await callback.message.answer(CATALOG_OPENING_TEXT)
+    status_msg = await message.answer(CATALOG_OPENING_TEXT)
 
     await cleanup_session(user_id)
 
@@ -367,7 +373,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
         session=_build_catalog_reading_session(document, chunks),
     )
 
-    await callback.message.answer(
+    await message.answer(
         build_catalog_document_opened_text(
             source_name=document.get("source_name") or "Документ",
             chunks_count=len(chunks)
@@ -377,7 +383,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     await safe_delete_message(status_msg)
 
-    await send_audio_chunk(callback.message, user_id)
+    await send_audio_chunk(message, user_id)
 
 
 @router.callback_query(F.data.startswith(CATALOG_DELETE_CONFIRM_PREFIX))
@@ -389,8 +395,14 @@ async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None
         await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
         return
 
-    if callback.message is None:
-        await callback.answer(CALLBACK_MESSAGE_MISSING_TEXT, show_alert=True)
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
+        return
+
+    message = await require_callback_message(callback)
+
+    if message is None:
         return
 
     document_id = parse_catalog_document_id(
@@ -404,12 +416,12 @@ async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None
 
     page = parse_catalog_page(callback.data, CATALOG_DELETE_CONFIRM_PREFIX) or 0
 
-    await callback.message.edit_text(
+    await message.edit_text(
         CATALOG_DELETE_CONFIRM_TEXT,
         reply_markup=catalog_delete_confirmation_keyboard(
             document_id=document_id,
             page=page,
-            user_id=callback.from_user.id,
+            user_id=user_id,
         ),
     )
     await callback.answer()
@@ -424,18 +436,20 @@ async def cancel_catalog_document_delete(callback: types.CallbackQuery) -> None:
         await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
         return
 
-    if callback.from_user is None:
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
         return
 
-    if callback.message is None:
-        await callback.answer(CALLBACK_MESSAGE_MISSING_TEXT, show_alert=True)
+    message = await require_callback_message(callback)
+
+    if message is None:
         return
 
-    user_id = callback.from_user.id
     page = parse_catalog_page(callback.data, CATALOG_DELETE_CANCEL_PREFIX) or 0
 
     await _refresh_catalog_message(
-        message=callback.message,
+        message=message,
         user_id=user_id,
         page=page,
     )
@@ -451,14 +465,15 @@ async def delete_catalog_document_handler(callback: types.CallbackQuery) -> None
         await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
         return
 
-    if callback.from_user is None:
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
         return
 
-    if callback.message is None:
-        await callback.answer(CALLBACK_MESSAGE_MISSING_TEXT, show_alert=True)
-        return
+    message = await require_callback_message(callback)
 
-    user_id = callback.from_user.id
+    if message is None:
+        return
 
     document_id = parse_catalog_document_id(
         callback_data=callback.data,
@@ -479,7 +494,7 @@ async def delete_catalog_document_handler(callback: types.CallbackQuery) -> None
     page = parse_catalog_page(callback.data, CATALOG_DELETE_PREFIX) or 0
 
     await _refresh_catalog_message(
-        message=callback.message,
+        message=message,
         user_id=user_id,
         page=page,
     )

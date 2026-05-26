@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import edge_tts
 
@@ -43,6 +44,15 @@ tts_semaphore = asyncio.Semaphore(TTS_CONCURRENCY_LIMIT)
 TTS_PROVIDER_NAMES = {"edge", "gemini"}
 
 TTSProgressCallback = Callable[[int, int, str, bool], Awaitable[None]]
+GenerateChunkCallable = Callable[..., Awaitable[str]]
+
+
+@dataclass(frozen=True)
+class TTSProviderSpec:
+    chunk_max_length: int
+    cache_voice_name: Callable[[str], str]
+    generate_chunk: GenerateChunkCallable
+    record_local_metrics: bool
 
 
 def _is_expected_provider_failure(error: Exception) -> bool:
@@ -94,10 +104,14 @@ def _provider_chain(provider_chain: list[str] | None = None) -> list[str]:
 
 
 def _chunk_max_length_for_providers(providers: list[str]) -> int:
-    if "gemini" in providers:
-        return GEMINI_TTS_CHUNK_MAX_LENGTH
+    specs = _provider_specs()
+    limits = [
+        specs[provider].chunk_max_length
+        for provider in providers
+        if provider in specs
+    ]
 
-    return DEFAULT_TTS_CHUNK_MAX_LENGTH
+    return min(limits) if limits else DEFAULT_TTS_CHUNK_MAX_LENGTH
 
 
 async def _notify_progress(
@@ -124,10 +138,7 @@ async def _notify_progress(
 
 
 def _cache_voice_for_provider(provider: str, voice: str) -> str:
-    if provider == "gemini":
-        return _gemini_cache_voice_name(voice)
-
-    return voice
+    return _provider_spec(provider).cache_voice_name(voice)
 
 
 def _validate_tts_input(text: str, voice: str, rate: str) -> None:
@@ -235,6 +246,66 @@ async def _generate_chunk_voice(
     )
 
 
+async def _generate_gemini_chunk_voice(
+    *,
+    chunk: str,
+    voice: str,
+    rate: str,
+    chunk_index: int,
+    chunks_count: int,
+) -> str:
+    return await generate_gemini_tts_ogg(
+        text=chunk,
+        voice=voice,
+        rate=rate,
+        chunk_index=chunk_index,
+        chunks_count=chunks_count,
+    )
+
+
+async def _generate_edge_chunk_voice(
+    *,
+    chunk: str,
+    voice: str,
+    rate: str,
+    chunk_index: int,
+    chunks_count: int,
+) -> str:
+    return await _generate_chunk_voice(
+        chunk=chunk,
+        voice=voice,
+        rate=rate,
+        chunk_index=chunk_index,
+        chunks_count=chunks_count,
+    )
+
+
+def _provider_specs() -> dict[str, TTSProviderSpec]:
+    return {
+        "edge": TTSProviderSpec(
+            chunk_max_length=DEFAULT_TTS_CHUNK_MAX_LENGTH,
+            cache_voice_name=lambda voice: voice,
+            generate_chunk=_generate_edge_chunk_voice,
+            record_local_metrics=True,
+        ),
+        "gemini": TTSProviderSpec(
+            chunk_max_length=GEMINI_TTS_CHUNK_MAX_LENGTH,
+            cache_voice_name=_gemini_cache_voice_name,
+            generate_chunk=_generate_gemini_chunk_voice,
+            record_local_metrics=False,
+        ),
+    }
+
+
+def _provider_spec(provider: str) -> TTSProviderSpec:
+    spec = _provider_specs().get(provider)
+
+    if spec is None:
+        raise RuntimeError(f"Unknown TTS provider: {provider}")
+
+    return spec
+
+
 async def _generate_chunk_voice_with_provider(
     *,
     provider: str,
@@ -244,25 +315,13 @@ async def _generate_chunk_voice_with_provider(
     chunk_index: int,
     chunks_count: int,
 ) -> str:
-    if provider == "gemini":
-        return await generate_gemini_tts_ogg(
-            text=chunk,
-            voice=voice,
-            rate=rate,
-            chunk_index=chunk_index,
-            chunks_count=chunks_count,
-        )
-
-    if provider == "edge":
-        return await _generate_chunk_voice(
-            chunk=chunk,
-            voice=voice,
-            rate=rate,
-            chunk_index=chunk_index,
-            chunks_count=chunks_count,
-        )
-
-    raise RuntimeError(f"Unknown TTS provider: {provider}")
+    return await _provider_spec(provider).generate_chunk(
+        chunk=chunk,
+        voice=voice,
+        rate=rate,
+        chunk_index=chunk_index,
+        chunks_count=chunks_count,
+    )
 
 
 async def _generate_chunk_voice_for_provider(
@@ -278,6 +337,7 @@ async def _generate_chunk_voice_for_provider(
     provider_errors: list[str] = []
 
     for provider in providers:
+        provider_spec = _provider_spec(provider)
         cache_voice = _cache_voice_for_provider(provider, voice)
         cached_audio_path = get_audio_from_cache(
             text=chunk,
@@ -307,7 +367,7 @@ async def _generate_chunk_voice_for_provider(
             )
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
 
-            if provider != "gemini":
+            if provider_spec.record_local_metrics:
                 await record_service_metric(
                     provider=provider,
                     operation="tts",
@@ -324,7 +384,7 @@ async def _generate_chunk_voice_for_provider(
         except Exception as error:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
 
-            if provider != "gemini":
+            if provider_spec.record_local_metrics:
                 await record_service_metric(
                     provider=provider,
                     operation="tts",

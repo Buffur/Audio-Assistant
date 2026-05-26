@@ -24,6 +24,19 @@ def test_validate_tts_input_rejects_bad_values() -> None:
         tts._validate_tts_input("text", "voice", None)
 
 
+def test_tts_provider_specs_cover_supported_provider_names() -> None:
+    assert set(tts._provider_specs()) == tts.TTS_PROVIDER_NAMES
+    assert tts._provider_spec("edge").record_local_metrics is True
+    assert tts._provider_spec("gemini").record_local_metrics is False
+
+
+def test_tts_provider_chain_deduplicates_and_ignores_unknown_provider() -> None:
+    assert tts._provider_chain(["gemini", "edge", "gemini", "unknown"]) == [
+        "gemini",
+        "edge",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_generate_voice_uses_split_chunks(monkeypatch) -> None:
     async def fake_generate_chunk_voice(

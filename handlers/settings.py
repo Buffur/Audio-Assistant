@@ -6,6 +6,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
+from handlers.callback_guards import callback_user_id, message_user_id
 from keyboards.main import SETTINGS_BUTTON_TEXT
 from keyboards.settings import (
     SETTINGS_PREVIEW_CALLBACK,
@@ -123,7 +124,7 @@ async def _send_voice_preview(
         if not audio_files:
             logger.warning(
                 "TTS preview не створив жодного аудіофайлу для user_id=%s",
-                callback.from_user.id
+                callback_user_id(callback)
             )
             await callback.message.answer(text)
             return
@@ -136,7 +137,7 @@ async def _send_voice_preview(
     except Exception:
         logger.exception(
             "Помилка генерації голосового прев'ю для user_id=%s",
-            callback.from_user.id
+            callback_user_id(callback)
         )
         await callback.message.answer(text)
 
@@ -144,16 +145,22 @@ async def _send_voice_preview(
 @router.message(Command("settings"))
 @router.message(F.text == SETTINGS_BUTTON_TEXT)
 async def settings_handler(message: Message) -> None:
-    if message.from_user is None:
+    user_id = message_user_id(message)
+
+    if user_id is None:
         return
 
-    text = await get_settings_text(message.from_user.id)
+    text = await get_settings_text(user_id)
     await message.answer(text, reply_markup=settings_keyboard())
 
 
 @router.callback_query(F.data.startswith(VOICE_CALLBACK_PREFIX))
 async def change_voice(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
+        return
+
     _, _, voice_key = callback.data.partition(":")
 
     option = VOICE_OPTIONS.get(voice_key)
@@ -186,7 +193,11 @@ async def change_voice(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(SPEED_CALLBACK_PREFIX))
 async def change_speed(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
+        return
+
     _, _, rate = callback.data.partition(":")
 
     if rate not in ALLOWED_SPEEDS:
@@ -219,7 +230,11 @@ async def change_speed(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == SETTINGS_PREVIEW_CALLBACK)
 async def settings_preview(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
+        return
+
     voice, rate = await get_effective_user_settings(user_id)
     tts_provider = await get_effective_user_tts_provider(user_id)
 
