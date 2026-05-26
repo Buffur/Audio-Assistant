@@ -7,6 +7,7 @@ from langdetect import LangDetectException, detect
 logger = logging.getLogger(__name__)
 
 DEFAULT_LANGUAGE = "uk"
+LANGUAGE_DETECTION_MAX_CHARS = 2_000
 
 VOICES_BY_LANGUAGE = {
     "uk": {
@@ -36,6 +37,10 @@ VOICES_BY_LANGUAGE = {
 }
 
 
+def _language_detection_sample(text: str) -> str:
+    return text.strip()[:LANGUAGE_DETECTION_MAX_CHARS]
+
+
 def detect_text_language(text: str) -> str:
     """
     Визначає мову тексту.
@@ -43,11 +48,13 @@ def detect_text_language(text: str) -> str:
     Якщо мову не вдалося визначити або вона не підтримується,
     повертає українську як дефолтну.
     """
-    if not text or not text.strip():
+    sample = _language_detection_sample(text)
+
+    if not sample:
         return DEFAULT_LANGUAGE
 
     try:
-        detected_language = detect(text)
+        detected_language = detect(sample)
     except LangDetectException:
         logger.warning("VoiceSelector: не вдалося визначити мову тексту")
         return DEFAULT_LANGUAGE

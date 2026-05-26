@@ -110,3 +110,73 @@ async def test_user_activity_registers_user(monkeypatch) -> None:
         "full_name": "Test User",
     }
     assert _ok_handler.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_user_activity_throttles_repeated_updates(monkeypatch) -> None:
+    calls = []
+    now = 100.0
+
+    async def fake_register_or_update_user(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        user_activity_module,
+        "register_or_update_user",
+        fake_register_or_update_user,
+    )
+    _ok_handler.calls = 0
+
+    middleware = user_activity_module.UserActivityMiddleware(
+        update_interval_seconds=60,
+        monotonic=lambda: now,
+    )
+    event = SimpleNamespace(
+        from_user=SimpleNamespace(
+            id=10,
+            username="tester",
+            full_name="Test User",
+        )
+    )
+
+    assert await middleware(_ok_handler, event, {}) == "ok"
+    assert await middleware(_ok_handler, event, {}) == "ok"
+
+    assert len(calls) == 1
+    assert _ok_handler.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_user_activity_updates_immediately_on_profile_change(monkeypatch) -> None:
+    calls = []
+    now = 100.0
+
+    async def fake_register_or_update_user(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        user_activity_module,
+        "register_or_update_user",
+        fake_register_or_update_user,
+    )
+
+    middleware = user_activity_module.UserActivityMiddleware(
+        update_interval_seconds=60,
+        monotonic=lambda: now,
+    )
+    event = SimpleNamespace(
+        from_user=SimpleNamespace(
+            id=10,
+            username="tester",
+            full_name="Test User",
+        )
+    )
+
+    await middleware(_ok_handler, event, {})
+    event.from_user.full_name = "Renamed User"
+    await middleware(_ok_handler, event, {})
+
+    assert [call["full_name"] for call in calls] == [
+        "Test User",
+        "Renamed User",
+    ]

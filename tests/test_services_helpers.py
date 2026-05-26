@@ -81,6 +81,21 @@ def test_voice_selector_falls_back_to_ukrainian_for_unsupported_language(monkeyp
     assert voice_selector.detect_text_language("Bonjour") == "uk"
 
 
+def test_voice_selector_limits_language_detection_sample(monkeypatch) -> None:
+    captured = {}
+
+    def fake_detect(text):
+        captured["text"] = text
+        return "en"
+
+    monkeypatch.setattr(voice_selector, "detect", fake_detect)
+
+    long_text = "  " + "a" * (voice_selector.LANGUAGE_DETECTION_MAX_CHARS + 50)
+
+    assert voice_selector.detect_text_language(long_text) == "en"
+    assert len(captured["text"]) == voice_selector.LANGUAGE_DETECTION_MAX_CHARS
+
+
 @pytest.mark.asyncio
 async def test_user_settings_service_defaults_and_validation(monkeypatch) -> None:
     async def fake_get_user_settings(user_id):
