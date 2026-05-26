@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     TTS_PROVIDER: str = "edge"
     TTS_PROVIDER_CHAIN: Annotated[list[str], NoDecode] = Field(default_factory=list)
     TTS_ESTIMATED_COST_PER_1K_CHARS_USD: float = 0.0
+    EDGE_TTS_REQUEST_TIMEOUT_SECONDS: int = 90
     GEMINI_TTS_MODEL: str = "gemini-3.1-flash-tts-preview"
     GEMINI_TTS_MODEL_CHAIN: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["gemini-2.5-flash-preview-tts"]
@@ -223,6 +224,7 @@ class Settings(BaseSettings):
         "FREE_DAILY_SUMMARY_LIMIT",
         "GEMINI_REQUEST_TIMEOUT_SECONDS",
         "GEMINI_RETRY_ATTEMPTS",
+        "EDGE_TTS_REQUEST_TIMEOUT_SECONDS",
         "OCR_MIN_TEXT_LENGTH",
         "GEMINI_TTS_REQUEST_TIMEOUT_SECONDS",
         "GEMINI_TTS_CHUNK_MAX_LENGTH",
@@ -487,6 +489,7 @@ OCR_MIN_TEXT_LENGTH = settings.OCR_MIN_TEXT_LENGTH
 TTS_PROVIDER = settings.TTS_PROVIDER
 TTS_PROVIDER_CHAIN = settings.TTS_PROVIDER_CHAIN
 TTS_ESTIMATED_COST_PER_1K_CHARS_USD = settings.TTS_ESTIMATED_COST_PER_1K_CHARS_USD
+EDGE_TTS_REQUEST_TIMEOUT_SECONDS = settings.EDGE_TTS_REQUEST_TIMEOUT_SECONDS
 GEMINI_TTS_MODEL = settings.GEMINI_TTS_MODEL
 GEMINI_TTS_MODEL_CHAIN = settings.GEMINI_TTS_MODEL_CHAIN
 GEMINI_TTS_VOICE = settings.GEMINI_TTS_VOICE

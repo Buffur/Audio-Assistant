@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import edge_tts
 
 from config import (
+    EDGE_TTS_REQUEST_TIMEOUT_SECONDS,
     GEMINI_TTS_CHUNK_MAX_LENGTH,
     GEMINI_TTS_MODEL,
     GEMINI_TTS_MODEL_CHAIN,
@@ -170,7 +171,16 @@ async def _save_edge_tts_to_mp3(
         rate=rate,
     )
 
-    await communicate.save(mp3_path)
+    try:
+        await asyncio.wait_for(
+            communicate.save(mp3_path),
+            timeout=EDGE_TTS_REQUEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(
+            "Edge TTS timeout: request took longer than "
+            f"{EDGE_TTS_REQUEST_TIMEOUT_SECONDS} seconds."
+        ) from error
 
     if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
         raise RuntimeError("Edge TTS не створив коректний mp3-файл.")

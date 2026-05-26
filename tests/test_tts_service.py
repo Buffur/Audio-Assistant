@@ -38,6 +38,78 @@ def test_tts_provider_chain_deduplicates_and_ignores_unknown_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_edge_tts_save_uses_configured_timeout(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    class FakeCommunicate:
+        def __init__(self, text: str, voice: str, rate: str) -> None:
+            captured["communicate"] = {
+                "text": text,
+                "voice": voice,
+                "rate": rate,
+            }
+
+        async def save(self, mp3_path: str) -> None:
+            captured["mp3_path"] = mp3_path
+            with open(mp3_path, "wb") as file:
+                file.write(b"mp3")
+
+    async def fake_wait_for(awaitable, timeout):
+        captured["timeout"] = timeout
+        return await awaitable
+
+    monkeypatch.setattr(tts.edge_tts, "Communicate", FakeCommunicate)
+    monkeypatch.setattr(tts.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(tts, "EDGE_TTS_REQUEST_TIMEOUT_SECONDS", 12)
+
+    mp3_path = tmp_path / "voice.mp3"
+
+    await tts._save_edge_tts_to_mp3(
+        text="hello",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        mp3_path=str(mp3_path),
+    )
+
+    assert captured["communicate"] == {
+        "text": "hello",
+        "voice": "uk-UA-PolinaNeural",
+        "rate": "+0%",
+    }
+    assert captured["mp3_path"] == str(mp3_path)
+    assert captured["timeout"] == 12
+
+
+@pytest.mark.asyncio
+async def test_edge_tts_save_raises_runtime_error_on_timeout(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FakeCommunicate:
+        def __init__(self, text: str, voice: str, rate: str) -> None:
+            return None
+
+        async def save(self, mp3_path: str) -> None:
+            return None
+
+    async def fake_wait_for(awaitable, timeout):
+        awaitable.close()
+        raise tts.asyncio.TimeoutError
+
+    monkeypatch.setattr(tts.edge_tts, "Communicate", FakeCommunicate)
+    monkeypatch.setattr(tts.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(tts, "EDGE_TTS_REQUEST_TIMEOUT_SECONDS", 12)
+
+    with pytest.raises(RuntimeError, match="Edge TTS timeout"):
+        await tts._save_edge_tts_to_mp3(
+            text="hello",
+            voice="uk-UA-PolinaNeural",
+            rate="+0%",
+            mp3_path=str(tmp_path / "voice.mp3"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_generate_voice_uses_split_chunks(monkeypatch) -> None:
     async def fake_generate_chunk_voice(
         chunk,

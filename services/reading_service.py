@@ -404,6 +404,14 @@ def _ensure_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
     return reading_audio_queue.ensure_memory_audio_generation_queue()
 
 
+def _memory_audio_queue_position() -> int:
+    return reading_audio_queue.memory_audio_queue_position()
+
+
+def _enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
+    reading_audio_queue.enqueue_memory_audio_job(job)
+
+
 async def close_reading_audio_queue(
     timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
 ) -> None:
@@ -793,8 +801,7 @@ async def export_reading_audio(
             await message.answer(EXPORT_AUDIO_GENERATION_ERROR)
             return
 
-    queue = _ensure_audio_generation_queue()
-    queued_position = queue.qsize() + 1
+    queued_position = _memory_audio_queue_position()
     status_msg = await message.answer(
         build_export_audio_queued_text(
             total_parts=len(chunks),
@@ -812,7 +819,7 @@ async def export_reading_audio(
         )
 
     try:
-        queue.put_nowait(job)
+        _enqueue_memory_audio_job(job)
     except asyncio.QueueFull:
         await safe_delete_message(status_msg)
         await _finish_generation_if_session(user_id, session_id)
@@ -1329,8 +1336,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
             await message.answer(BACKGROUND_GENERATION_ERROR)
             return
 
-    queue = _ensure_audio_generation_queue()
-    queued_position = queue.qsize() + 1
+    queued_position = _memory_audio_queue_position()
     status_msg = await message.answer(
         build_audio_generation_queued_text(
             current_part=index + 1,
@@ -1349,7 +1355,7 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
         )
 
     try:
-        queue.put_nowait(job)
+        _enqueue_memory_audio_job(job)
     except asyncio.QueueFull:
         await safe_delete_message(status_msg)
         await _finish_generation_if_session(user_id, session_id)

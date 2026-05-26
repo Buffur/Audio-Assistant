@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -322,17 +323,26 @@ async def test_send_audio_chunk_reports_redis_queue_failure_without_memory_fallb
 
 
 @pytest.mark.asyncio
-async def test_enqueue_redis_audio_job_uses_pending_list(monkeypatch) -> None:
+async def test_enqueue_redis_audio_job_uses_active_capacity_script(monkeypatch) -> None:
     captured = {}
 
     class FakeRedis:
-        async def llen(self, key: str) -> int:
-            captured["llen_key"] = key
-            return 0
-
-        async def lpush(self, key: str, value: str) -> None:
-            captured["lpush_key"] = key
+        async def eval(
+            self,
+            script: str,
+            keys_count: int,
+            pending_key: str,
+            processing_key: str,
+            max_size: str,
+            value: str,
+        ) -> int:
+            captured["script"] = script
+            captured["keys_count"] = keys_count
+            captured["pending_key"] = pending_key
+            captured["processing_key"] = processing_key
+            captured["max_size"] = max_size
             captured["payload"] = value
+            return 1
 
     async def fake_start_workers(job_handler) -> None:
         captured["started"] = True
@@ -347,22 +357,66 @@ async def test_enqueue_redis_audio_job_uses_pending_list(monkeypatch) -> None:
     monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
 
     await reading_audio_queue.enqueue_redis_audio_job(
-        {
-            "type": "send_chunk",
-            "user_id": 1,
-        },
+        reading_audio_queue.build_send_chunk_job(
+            user_id=1,
+            chat_id=1001,
+            session_id="session-1",
+            status_message_id=None,
+        ),
         fake_job_handler,
     )
 
     assert captured["started"] is True
-    assert captured["llen_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
-    assert captured["lpush_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["keys_count"] == 2
+    assert captured["pending_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["processing_key"] == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    assert captured["max_size"] == str(reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE)
+    assert "pending + processing" in captured["script"]
     assert '"type":"send_chunk"' in captured["payload"]
 
 
+@pytest.mark.asyncio
+async def test_enqueue_redis_audio_job_rejects_when_active_capacity_is_full(
+    monkeypatch,
+) -> None:
+    class FakeRedis:
+        async def eval(self, *args) -> int:
+            return 0
+
+    async def fake_start_workers(job_handler) -> None:
+        return None
+
+    async def fake_get_redis_client():
+        return FakeRedis()
+
+    async def fake_job_handler(bot, job) -> None:
+        return None
+
+    monkeypatch.setattr(reading_audio_queue, "start_audio_workers", fake_start_workers)
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+
+    with pytest.raises(asyncio.QueueFull):
+        await reading_audio_queue.enqueue_redis_audio_job(
+            reading_audio_queue.build_send_chunk_job(
+                user_id=1,
+                chat_id=1001,
+                session_id="session-1",
+                status_message_id=None,
+            ),
+            fake_job_handler,
+        )
+
+
 def test_serialize_audio_job_adds_unique_job_id() -> None:
-    first = json.loads(reading_audio_queue.serialize_audio_job({"type": "send_chunk"}))
-    second = json.loads(reading_audio_queue.serialize_audio_job({"type": "send_chunk"}))
+    job = reading_audio_queue.build_send_chunk_job(
+        user_id=1,
+        chat_id=1001,
+        session_id="session-1",
+        status_message_id=None,
+    )
+
+    first = json.loads(reading_audio_queue.serialize_audio_job(job))
+    second = json.loads(reading_audio_queue.serialize_audio_job(job))
 
     assert first["job_id"]
     assert second["job_id"]
