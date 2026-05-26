@@ -60,11 +60,20 @@ REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = (
     reading_audio_queue.REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS
 )
 REDIS_PREFETCH_WAIT_SECONDS = prefetch_service.REDIS_PREFETCH_WAIT_SECONDS
+READING_AUDIO_QUEUE_BACKEND = reading_audio_queue.READING_AUDIO_QUEUE_BACKEND
+READING_AUDIO_QUEUE_REDIS_KEY = reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+READING_AUDIO_QUEUE_MAX_SIZE = reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE
 REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
 
 AudioGenerationJob = reading_audio_queue.AudioGenerationJob
 ReadingSession = dict[str, object]
 SerializedAudioJob = reading_audio_queue.SerializedAudioJob
+_audio_queue_ensure_redis_audio_generation_worker = (
+    reading_audio_queue._ensure_redis_audio_generation_worker
+)
+_last_audio_queue_backend = READING_AUDIO_QUEUE_BACKEND
+_last_audio_queue_redis_key = READING_AUDIO_QUEUE_REDIS_KEY
+_last_audio_queue_max_size = READING_AUDIO_QUEUE_MAX_SIZE
 
 PRIVACY_DELETE_MARKER_PREFIX = privacy_service.PRIVACY_DELETE_MARKER_PREFIX
 PRIVACY_DELETE_MARKER_TTL_SECONDS = (
@@ -77,7 +86,70 @@ _privacy_delete_markers = privacy_service._privacy_delete_markers
 
 
 def _use_redis_audio_queue() -> bool:
+    _sync_audio_queue_compat_settings()
     return reading_audio_queue.use_redis_audio_queue()
+
+
+def _sync_audio_queue_compat_settings() -> None:
+    global READING_AUDIO_QUEUE_BACKEND
+    global READING_AUDIO_QUEUE_REDIS_KEY
+    global READING_AUDIO_QUEUE_MAX_SIZE
+    global REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    global _last_audio_queue_backend
+    global _last_audio_queue_redis_key
+    global _last_audio_queue_max_size
+
+    READING_AUDIO_QUEUE_BACKEND = _select_audio_queue_compat_value(
+        READING_AUDIO_QUEUE_BACKEND,
+        reading_audio_queue.READING_AUDIO_QUEUE_BACKEND,
+        _last_audio_queue_backend,
+    )
+    READING_AUDIO_QUEUE_REDIS_KEY = _select_audio_queue_compat_value(
+        READING_AUDIO_QUEUE_REDIS_KEY,
+        reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY,
+        _last_audio_queue_redis_key,
+    )
+    READING_AUDIO_QUEUE_MAX_SIZE = _select_audio_queue_compat_value(
+        READING_AUDIO_QUEUE_MAX_SIZE,
+        reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE,
+        _last_audio_queue_max_size,
+    )
+
+    reading_audio_queue.READING_AUDIO_QUEUE_BACKEND = READING_AUDIO_QUEUE_BACKEND
+    reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY = READING_AUDIO_QUEUE_REDIS_KEY
+    reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE = READING_AUDIO_QUEUE_MAX_SIZE
+    reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY = (
+        f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
+    )
+    REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    _last_audio_queue_backend = READING_AUDIO_QUEUE_BACKEND
+    _last_audio_queue_redis_key = READING_AUDIO_QUEUE_REDIS_KEY
+    _last_audio_queue_max_size = READING_AUDIO_QUEUE_MAX_SIZE
+
+
+def _select_audio_queue_compat_value(service_value, queue_value, last_value):
+    service_changed = service_value != last_value
+    queue_changed = queue_value != last_value
+
+    if service_changed and not queue_changed:
+        return service_value
+
+    if queue_changed and not service_changed:
+        return queue_value
+
+    return service_value
+
+
+def _ensure_redis_audio_generation_worker() -> None:
+    _sync_audio_queue_compat_settings()
+    _audio_queue_ensure_redis_audio_generation_worker(_run_serialized_audio_job)
+
+
+def _install_redis_worker_compat_hook() -> None:
+    def ensure_worker(_job_handler) -> None:
+        _ensure_redis_audio_generation_worker()
+
+    reading_audio_queue._ensure_redis_audio_generation_worker = ensure_worker
 
 
 def _build_audio_job_executor() -> ReadingAudioJobExecutor:
@@ -98,14 +170,33 @@ async def start_reading_audio_workers() -> None:
 
 
 async def _redis_audio_queue_position() -> int:
+    _sync_audio_queue_compat_settings()
     return await reading_audio_queue.redis_audio_queue_position()
 
 
 async def _enqueue_redis_audio_job(job: SerializedAudioJob) -> None:
+    _sync_audio_queue_compat_settings()
+    _install_redis_worker_compat_hook()
     await reading_audio_queue.enqueue_redis_audio_job(
-        job,
+        _normalize_legacy_audio_job(job),
         _run_serialized_audio_job,
     )
+
+
+def _normalize_legacy_audio_job(job: SerializedAudioJob) -> SerializedAudioJob:
+    job_type = str(job.get("type") or "")
+
+    if job_type in {"send_chunk", "export_audio"} and "status_message_id" not in job:
+        normalized_job = dict(job)
+        normalized_job["status_message_id"] = None
+        return reading_audio_queue.validate_audio_job(normalized_job)
+
+    return reading_audio_queue.validate_audio_job(job)
+
+
+async def purge_queued_audio_jobs_for_user(user_id: int) -> int:
+    _sync_audio_queue_compat_settings()
+    return await reading_audio_queue.purge_queued_audio_jobs_for_user(user_id)
 
 
 def _ensure_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:

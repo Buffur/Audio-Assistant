@@ -407,6 +407,62 @@ async def test_enqueue_redis_audio_job_rejects_when_active_capacity_is_full(
         )
 
 
+@pytest.mark.asyncio
+async def test_reading_service_redis_queue_compat_aliases_update_audio_queue(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeRedis:
+        async def eval(
+            self,
+            script: str,
+            keys_count: int,
+            pending_key: str,
+            processing_key: str,
+            max_size: str,
+            value: str,
+        ) -> int:
+            captured["pending_key"] = pending_key
+            captured["processing_key"] = processing_key
+            captured["max_size"] = max_size
+            captured["payload"] = value
+            return 1
+
+    async def fake_get_redis_client():
+        return FakeRedis()
+
+    monkeypatch.setattr(
+        reading_service,
+        "READING_AUDIO_QUEUE_REDIS_KEY",
+        "test:compat:queue",
+    )
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_MAX_SIZE", 1)
+    monkeypatch.setattr(
+        reading_service,
+        "_ensure_redis_audio_generation_worker",
+        lambda: None,
+    )
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+
+    await reading_service._enqueue_redis_audio_job(
+        {
+            "type": "send_chunk",
+            "user_id": 1,
+            "chat_id": 1001,
+            "session_id": "legacy-session",
+        }
+    )
+
+    payload = json.loads(captured["payload"])
+
+    assert captured["pending_key"] == "test:compat:queue"
+    assert captured["processing_key"] == "test:compat:queue:processing"
+    assert captured["max_size"] == "1"
+    assert payload["status_message_id"] is None
+    assert payload["session_id"] == "legacy-session"
+
+
 def test_serialize_audio_job_adds_unique_job_id() -> None:
     job = reading_audio_queue.build_send_chunk_job(
         user_id=1,
