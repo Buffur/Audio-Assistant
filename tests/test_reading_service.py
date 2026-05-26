@@ -51,6 +51,63 @@ async def cleanup_reading_state():
 
 
 @pytest.mark.asyncio
+async def test_start_reading_session_creates_session_and_replaces_old_one() -> None:
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "old-session",
+            "chunks": ["old"],
+            "index": 0,
+        },
+    )
+
+    session = await reading_service.start_reading_session(
+        user_id=1,
+        chunks=["one", "two"],
+        catalog_document_id=42,
+        summary_text=" Cached summary ",
+        summary_voice_file_ids=["voice-file-id"],
+        summary_voice_voice="uk-UA-PolinaNeural",
+        summary_voice_rate="+0%",
+        summary_voice_provider="edge",
+    )
+
+    stored_session = await store.get_reading_session(1)
+
+    assert stored_session == session
+    assert session["session_id"] != "old-session"
+    assert session["chunks"] == ["one", "two"]
+    assert session["index"] == 0
+    assert session["is_generating"] is True
+    assert session["catalog_document_id"] == 42
+    assert session["summary_text"] == "Cached summary"
+    assert session["summary_delivered"] is False
+    assert session["summary_voice_file_ids"] == ["voice-file-id"]
+    assert session["summary_voice_voice"] == "uk-UA-PolinaNeural"
+
+
+@pytest.mark.asyncio
+async def test_is_audio_generation_active_reflects_session_state() -> None:
+    assert await reading_service.is_audio_generation_active(1) is False
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["one"],
+            "index": 0,
+            "is_generating": True,
+        },
+    )
+
+    assert await reading_service.is_audio_generation_active(1) is True
+
+    await store.update_reading_session(1, is_generating=False)
+
+    assert await reading_service.is_audio_generation_active(1) is False
+
+
+@pytest.mark.asyncio
 async def test_reply_with_voice_sends_error_text_without_tts(monkeypatch) -> None:
     message = FakeMessage()
     status_msg = FakeStatusMessage("processing")

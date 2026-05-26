@@ -2,9 +2,11 @@
 
 import logging
 from contextlib import suppress
+from dataclasses import dataclass
 
 from aiogram import F, Router, types
 
+from handlers.callback_guards import callback_user_id
 from keyboards.reading import (
     READ_EXPORT_AUDIO_ACTION,
     READ_NEXT_ACTION,
@@ -22,16 +24,14 @@ from services.parser import summarize_text_with_ai
 from services.reading_service import (
     cleanup_session,
     export_reading_audio,
+    finish_reading_generation as finish_generation,
+    get_current_reading_session as get_reading_session,
+    has_current_reading_session as has_reading_session,
     reply_with_voice,
     safe_delete_message,
     send_audio_chunk,
-)
-from services.reading_session_store import (
-    finish_generation,
-    get_reading_session,
-    has_reading_session,
-    try_start_generation,
-    update_reading_session,
+    try_start_reading_generation as try_start_generation,
+    update_current_reading_session as update_reading_session,
 )
 from services.tts import generate_voice
 from services.usage_limits_service import (
@@ -71,6 +71,13 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ReadingCallbackContext:
+    user_id: int
+    callback_session_id: str | None
+    session: dict
+
+
 async def _refund_reserved_summary(user_id: int) -> None:
     try:
         await refund_summary_generation(user_id)
@@ -94,6 +101,53 @@ def _is_matching_session(
         return True
 
     return session.get("session_id") == callback_session_id
+
+
+def _reading_callback_identity(
+    callback: types.CallbackQuery,
+) -> tuple[int, str | None] | None:
+    user_id = callback_user_id(callback)
+
+    if user_id is None:
+        return None
+
+    _action, callback_session_id = parse_reading_callback(callback.data)
+
+    return user_id, callback_session_id
+
+
+async def _get_reading_callback_context(
+    callback: types.CallbackQuery,
+    *,
+    missing_text: str,
+) -> ReadingCallbackContext | None:
+    identity = _reading_callback_identity(callback)
+
+    if identity is None:
+        return None
+
+    user_id, callback_session_id = identity
+    session = await get_reading_session(user_id)
+
+    if not session:
+        await callback.answer(
+            missing_text,
+            show_alert=True,
+        )
+        return None
+
+    if not _is_matching_session(session, callback_session_id):
+        await callback.answer(
+            OUTDATED_READING_BUTTON_TEXT,
+            show_alert=True,
+        )
+        return None
+
+    return ReadingCallbackContext(
+        user_id=user_id,
+        callback_session_id=callback_session_id,
+        session=session,
+    )
 
 
 async def _safe_edit_reply_markup(
@@ -431,24 +485,17 @@ async def process_read_next(callback: types.CallbackQuery) -> None:
     """
     Обробляє кнопку «Слухати далі».
     """
-    user_id = callback.from_user.id
-    _, callback_session_id = parse_reading_callback(callback.data)
+    context = await _get_reading_callback_context(
+        callback,
+        missing_text=SESSION_NOT_FOUND_OR_FINISHED_TEXT,
+    )
 
-    session = await get_reading_session(user_id)
-
-    if not session:
-        await callback.answer(
-            SESSION_NOT_FOUND_OR_FINISHED_TEXT,
-            show_alert=True,
-        )
+    if context is None:
         return
 
-    if not _is_matching_session(session, callback_session_id):
-        await callback.answer(
-            OUTDATED_READING_BUTTON_TEXT,
-            show_alert=True,
-        )
-        return
+    user_id = context.user_id
+    callback_session_id = context.callback_session_id
+    session = context.session
 
     show_summary_button = not bool(session.get("summary_delivered"))
 
@@ -502,24 +549,17 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
     """
     Обробляє кнопку «Короткий зміст».
     """
-    user_id = callback.from_user.id
-    _, callback_session_id = parse_reading_callback(callback.data)
+    context = await _get_reading_callback_context(
+        callback,
+        missing_text=SESSION_NOT_FOUND_TEXT,
+    )
 
-    session = await get_reading_session(user_id)
-
-    if not session:
-        await callback.answer(
-            SESSION_NOT_FOUND_TEXT,
-            show_alert=True,
-        )
+    if context is None:
         return
 
-    if not _is_matching_session(session, callback_session_id):
-        await callback.answer(
-            OUTDATED_READING_BUTTON_TEXT,
-            show_alert=True,
-        )
-        return
+    user_id = context.user_id
+    callback_session_id = context.callback_session_id
+    session = context.session
 
     cached_summary_text = _get_cached_summary_text(session)
 
@@ -727,24 +767,16 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(READ_EXPORT_AUDIO_ACTION))
 async def process_read_export_audio(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id
-    _, callback_session_id = parse_reading_callback(callback.data)
+    context = await _get_reading_callback_context(
+        callback,
+        missing_text=SESSION_NOT_FOUND_TEXT,
+    )
 
-    session = await get_reading_session(user_id)
-
-    if not session:
-        await callback.answer(
-            SESSION_NOT_FOUND_TEXT,
-            show_alert=True,
-        )
+    if context is None:
         return
 
-    if not _is_matching_session(session, callback_session_id):
-        await callback.answer(
-            OUTDATED_READING_BUTTON_TEXT,
-            show_alert=True,
-        )
-        return
+    user_id = context.user_id
+    callback_session_id = context.callback_session_id
 
     if not await is_premium_user(user_id):
         await callback.answer(
@@ -796,8 +828,12 @@ async def process_read_stop(callback: types.CallbackQuery) -> None:
     """
     Обробляє кнопку «Закінчити».
     """
-    user_id = callback.from_user.id
-    _, callback_session_id = parse_reading_callback(callback.data)
+    identity = _reading_callback_identity(callback)
+
+    if identity is None:
+        return
+
+    user_id, callback_session_id = identity
 
     session = await get_reading_session(user_id)
 

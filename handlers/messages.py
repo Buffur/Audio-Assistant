@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import time
-import uuid
 
 from aiogram import Router, types
 
@@ -11,13 +10,11 @@ from services.content_extractor import SUPPORTED_FORMATS_ERROR, extract_text_fro
 from services.document_history_service import save_document_history_from_message
 from services.reading_service import (
     cleanup_session,
+    is_audio_generation_active,
     reply_with_voice,
     safe_delete_message,
     send_audio_chunk,
-)
-from services.reading_session_store import (
-    get_reading_session,
-    set_reading_session,
+    start_reading_session,
 )
 from services.ocr import OCR_NO_TEXT_MESSAGE
 from services.usage_limits_service import (
@@ -141,10 +138,6 @@ async def _refund_reserved_input(user_id: int, usage_type: str) -> None:
         )
 
 
-def _generate_session_id() -> str:
-    return uuid.uuid4().hex[:12]
-
-
 async def _process_message(message: types.Message, user_id: int) -> None:
     if not _is_supported_processing_message(message):
         await _handle_unsupported_message(message, user_id)
@@ -154,9 +147,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         await message.answer(UNKNOWN_COMMAND_TEXT)
         return
 
-    current_session = await get_reading_session(user_id)
-
-    if current_session and current_session.get("is_generating"):
+    if await is_audio_generation_active(user_id):
         await message.answer(WAIT_CURRENT_AUDIO_REQUEST_TEXT)
         return
 
@@ -222,20 +213,11 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         chunks=chunks,
     )
 
-    session = {
-        "session_id": _generate_session_id(),
-        "chunks": chunks,
-        "index": 0,
-        "is_generating": True,
-        "prefetch_task": None,
-    }
-
-    if document_id is not None:
-        session["catalog_document_id"] = document_id
-
-    await set_reading_session(
+    await start_reading_session(
         user_id=user_id,
-        session=session,
+        chunks=chunks,
+        catalog_document_id=document_id,
+        cleanup_existing=False,
     )
 
     if len(chunks) > 1:

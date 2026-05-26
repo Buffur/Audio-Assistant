@@ -48,7 +48,7 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
         captured["history"] = kwargs
         return 77
 
-    async def fake_set_reading_session(**kwargs):
+    async def fake_start_reading_session(**kwargs):
         captured["session"] = kwargs
 
     async def fake_send_audio_chunk(message_arg, user_id):
@@ -74,7 +74,7 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
         "save_document_history_from_message",
         fake_save_document_history_from_message,
     )
-    monkeypatch.setattr(messages, "set_reading_session", fake_set_reading_session)
+    monkeypatch.setattr(messages, "start_reading_session", fake_start_reading_session)
     monkeypatch.setattr(messages, "send_audio_chunk", fake_send_audio_chunk)
     monkeypatch.setattr(messages, "reply_with_voice", fake_reply_with_voice)
 
@@ -86,7 +86,9 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
     ]
     assert message.status_messages[0].deleted is True
     assert captured["session"]["user_id"] == 123
-    assert captured["session"]["session"]["catalog_document_id"] == 77
+    assert captured["session"]["catalog_document_id"] == 77
+    assert captured["session"]["chunks"] == ["part 1", "part 2"]
+    assert captured["session"]["cleanup_existing"] is False
     assert captured["send_audio"] == {
         "message": message,
         "user_id": 123,
@@ -273,11 +275,8 @@ async def test_new_material_is_rejected_while_audio_generation_is_active(
 ) -> None:
     message = FakeMessage()
 
-    async def fake_get_reading_session(user_id):
-        return {
-            "session_id": "active-session",
-            "is_generating": True,
-        }
+    async def fake_is_audio_generation_active(user_id):
+        return True
 
     async def fail_cleanup_session(user_id):
         raise AssertionError("active generation must not be cleaned up")
@@ -285,7 +284,11 @@ async def test_new_material_is_rejected_while_audio_generation_is_active(
     async def fail_reserve_input_processing(user_id, usage_type):
         raise AssertionError("quota must not be reserved for rejected material")
 
-    monkeypatch.setattr(messages, "get_reading_session", fake_get_reading_session)
+    monkeypatch.setattr(
+        messages,
+        "is_audio_generation_active",
+        fake_is_audio_generation_active,
+    )
     monkeypatch.setattr(messages, "cleanup_session", fail_cleanup_session)
     monkeypatch.setattr(
         messages,

@@ -10,6 +10,8 @@ from keyboards.reading import (
 from services import reading_session_store as store
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
+    OUTDATED_READING_BUTTON_TEXT,
+    SESSION_NOT_FOUND_TEXT,
     SUMMARY_ALREADY_READY_TEXT,
     SUMMARY_ALREADY_SENT_TEXT,
 )
@@ -64,6 +66,46 @@ async def cleanup_reading_sessions():
     await store.cleanup_all_reading_sessions()
     yield
     await store.cleanup_all_reading_sessions()
+
+
+@pytest.mark.asyncio
+async def test_reading_callback_context_reports_missing_session() -> None:
+    callback = FakeCallback()
+
+    result = await reading_callbacks._get_reading_callback_context(
+        callback,
+        missing_text=SESSION_NOT_FOUND_TEXT,
+    )
+
+    assert result is None
+    assert callback.answers == [{
+        "text": SESSION_NOT_FOUND_TEXT,
+        "show_alert": True,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_reading_callback_context_rejects_outdated_session() -> None:
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-current",
+            "chunks": ["part 1"],
+            "index": 0,
+        },
+    )
+    callback = FakeCallback(session_id="session-old")
+
+    result = await reading_callbacks._get_reading_callback_context(
+        callback,
+        missing_text=SESSION_NOT_FOUND_TEXT,
+    )
+
+    assert result is None
+    assert callback.answers == [{
+        "text": OUTDATED_READING_BUTTON_TEXT,
+        "show_alert": True,
+    }]
 
 
 @pytest.mark.asyncio

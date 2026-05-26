@@ -28,7 +28,11 @@ from config import (
 from keyboards.reading import reading_navigation_keyboard
 from services.reading_session_store import (
     cleanup_reading_session,
+    finish_generation as _finish_generation,
     get_reading_session,
+    has_reading_session as _has_reading_session,
+    set_reading_session,
+    try_start_generation as _try_start_generation,
     update_reading_session,
 )
 from services.redis_client import get_redis_client
@@ -684,6 +688,101 @@ async def cleanup_session(user_id: int) -> None:
     Public wrapper для handlers.
     """
     await cleanup_reading_session(user_id)
+
+
+def create_reading_session(
+    *,
+    chunks: list[str],
+    catalog_document_id: object | None = None,
+    summary_text: str | None = None,
+    summary_voice_file_ids: list[str] | None = None,
+    summary_voice_voice: str | None = None,
+    summary_voice_rate: str | None = None,
+    summary_voice_provider: str | None = None,
+) -> dict:
+    session = {
+        "session_id": uuid.uuid4().hex[:12],
+        "chunks": chunks,
+        "index": 0,
+        "is_generating": True,
+        "prefetch_task": None,
+    }
+
+    if catalog_document_id is not None:
+        session["catalog_document_id"] = catalog_document_id
+
+    normalized_summary_text = (summary_text or "").strip()
+
+    if normalized_summary_text:
+        session["summary_text"] = normalized_summary_text
+        session["summary_delivered"] = False
+
+    if summary_voice_file_ids:
+        session["summary_voice_file_ids"] = summary_voice_file_ids
+        session["summary_voice_voice"] = summary_voice_voice
+        session["summary_voice_rate"] = summary_voice_rate
+        session["summary_voice_provider"] = summary_voice_provider
+
+    return session
+
+
+async def is_audio_generation_active(user_id: int) -> bool:
+    session = await get_reading_session(user_id)
+
+    return bool(session and session.get("is_generating"))
+
+
+async def get_current_reading_session(user_id: int) -> dict | None:
+    return await get_reading_session(user_id)
+
+
+async def has_current_reading_session(user_id: int) -> bool:
+    return await _has_reading_session(user_id)
+
+
+async def try_start_reading_generation(user_id: int) -> bool:
+    return await _try_start_generation(user_id)
+
+
+async def finish_reading_generation(user_id: int) -> None:
+    await _finish_generation(user_id)
+
+
+async def update_current_reading_session(user_id: int, **updates) -> None:
+    await update_reading_session(user_id, **updates)
+
+
+async def start_reading_session(
+    *,
+    user_id: int,
+    chunks: list[str],
+    catalog_document_id: object | None = None,
+    summary_text: str | None = None,
+    summary_voice_file_ids: list[str] | None = None,
+    summary_voice_voice: str | None = None,
+    summary_voice_rate: str | None = None,
+    summary_voice_provider: str | None = None,
+    cleanup_existing: bool = True,
+) -> dict:
+    if cleanup_existing:
+        await cleanup_session(user_id)
+
+    session = create_reading_session(
+        chunks=chunks,
+        catalog_document_id=catalog_document_id,
+        summary_text=summary_text,
+        summary_voice_file_ids=summary_voice_file_ids,
+        summary_voice_voice=summary_voice_voice,
+        summary_voice_rate=summary_voice_rate,
+        summary_voice_provider=summary_voice_provider,
+    )
+
+    await set_reading_session(
+        user_id=user_id,
+        session=session,
+    )
+
+    return session
 
 
 async def _send_audio_files(

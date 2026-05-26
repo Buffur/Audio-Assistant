@@ -3,7 +3,9 @@
 import asyncio
 import importlib
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
@@ -126,117 +128,137 @@ def _import_optional_attr(
 
 
 # ============================================================
-# OPTIONAL IMPORTS
+# STARTUP DEPENDENCIES
 # ============================================================
 
-UserActivityMiddleware = _import_optional_attr(
-    module_path="middlewares.user_activity",
-    attr_name="UserActivityMiddleware",
-    warning_message=(
-        "middlewares.user_activity не знайдено. "
-        "Глобальна реєстрація користувачів не підключена."
-    ),
-)
-
-BanMiddleware = _import_optional_attr(
-    module_path="middlewares.ban",
-    attr_name="BanMiddleware",
-    warning_message=(
-        "middlewares.ban не знайдено. "
-        "Глобальна перевірка бану не підключена."
-    ),
-)
-
-RateLimitMiddleware = _import_optional_attr(
-    module_path="middlewares.rate_limit",
-    attr_name="RateLimitMiddleware",
-    warning_message=(
-        "middlewares.rate_limit не знайдено. "
-        "Rate limit не підключено."
-    ),
-)
-
-RedisRateLimitMiddleware = _import_optional_attr(
-    module_path="middlewares.redis_rate_limit",
-    attr_name="RedisRateLimitMiddleware",
-    warning_message=(
-        "middlewares.redis_rate_limit не знайдено. "
-        "Redis rate limit не підключено."
-    ),
-)
-
-close_http_session = _import_optional_attr(
-    module_path="services.parser",
-    attr_name="close_http_session",
-    warning_message=(
-        "services.parser або close_http_session не знайдено. "
-        "Закриття HTTP-сесії парсера не підключено."
-    ),
-)
-
-close_redis_client = _import_optional_attr(
-    module_path="services.redis_client",
-    attr_name="close_redis_client",
-    warning_message=(
-        "services.redis_client або close_redis_client не знайдено. "
-        "Закриття Redis-з'єднання не підключено."
-    ),
-)
-
-cleanup_all_reading_sessions = _import_optional_attr(
-    module_path="services.reading_session_store",
-    attr_name="cleanup_all_reading_sessions",
-    warning_message=(
-        "services.reading_session_store не має cleanup_all_reading_sessions. "
-        "Повне очищення reading-сесій не підключено."
-    ),
-)
-
-cleanup_expired_reading_sessions = _import_optional_attr(
-    module_path="services.reading_session_store",
-    attr_name="cleanup_expired_reading_sessions",
-    warning_message=(
-        "services.reading_session_store не має cleanup_expired_reading_sessions. "
-        "Фонове очищення reading-сесій не підключено."
-    ),
-)
-
-close_reading_audio_queue = _import_optional_attr(
-    module_path="services.reading_service",
-    attr_name="close_reading_audio_queue",
-    warning_message=(
-        "services.reading_service не має close_reading_audio_queue. "
-        "Фонову чергу озвучки не буде закрито явно."
-    ),
-)
-
-start_reading_audio_workers = _import_optional_attr(
-    module_path="services.reading_service",
-    attr_name="start_reading_audio_workers",
-    warning_message=(
-        "services.reading_service не має start_reading_audio_workers. "
-        "Redis audio workers не будуть запущені на startup."
-    ),
-)
-
-run_maintenance_cleanup = _import_optional_attr(
-    module_path="services.maintenance_service",
-    attr_name="run_maintenance_cleanup",
-    warning_message=(
-        "services.maintenance_service не має run_maintenance_cleanup. "
-        "Фонове очищення retention-даних не підключено."
-    ),
-)
+MiddlewareFactory = Callable[..., Any]
+AsyncHook = Callable[[], Awaitable[Any]]
 
 
-close_telemetry_service = _import_optional_attr(
-    module_path="services.telemetry_service",
-    attr_name="close_telemetry_service",
-    warning_message=(
-        "services.telemetry_service or close_telemetry_service not found. "
-        "Telemetry flush on shutdown is disabled."
-    ),
-)
+@dataclass(frozen=True)
+class MiddlewareFactories:
+    user_activity: MiddlewareFactory | None = None
+    ban: MiddlewareFactory | None = None
+    rate_limit: MiddlewareFactory | None = None
+    redis_rate_limit: MiddlewareFactory | None = None
+
+
+@dataclass(frozen=True)
+class BotLifecycleHooks:
+    close_http_session: AsyncHook | None = None
+    close_redis_client: AsyncHook | None = None
+    cleanup_all_reading_sessions: AsyncHook | None = None
+    cleanup_expired_reading_sessions: AsyncHook | None = None
+    close_reading_audio_queue: AsyncHook | None = None
+    start_reading_audio_workers: AsyncHook | None = None
+    run_maintenance_cleanup: AsyncHook | None = None
+    close_telemetry_service: AsyncHook | None = None
+
+
+def load_middleware_factories() -> MiddlewareFactories:
+    return MiddlewareFactories(
+        user_activity=_import_optional_attr(
+            module_path="middlewares.user_activity",
+            attr_name="UserActivityMiddleware",
+            warning_message=(
+                "middlewares.user_activity is unavailable. "
+                "User activity tracking middleware is disabled."
+            ),
+        ),
+        ban=_import_optional_attr(
+            module_path="middlewares.ban",
+            attr_name="BanMiddleware",
+            warning_message=(
+                "middlewares.ban is unavailable. "
+                "Ban middleware is disabled."
+            ),
+        ),
+        rate_limit=_import_optional_attr(
+            module_path="middlewares.rate_limit",
+            attr_name="RateLimitMiddleware",
+            warning_message=(
+                "middlewares.rate_limit is unavailable. "
+                "In-memory rate limit middleware is disabled."
+            ),
+        ),
+        redis_rate_limit=_import_optional_attr(
+            module_path="middlewares.redis_rate_limit",
+            attr_name="RedisRateLimitMiddleware",
+            warning_message=(
+                "middlewares.redis_rate_limit is unavailable. "
+                "Redis rate limit middleware is disabled."
+            ),
+        ),
+    )
+
+
+def load_lifecycle_hooks() -> BotLifecycleHooks:
+    return BotLifecycleHooks(
+        close_http_session=_import_optional_attr(
+            module_path="services.parser",
+            attr_name="close_http_session",
+            warning_message=(
+                "services.parser.close_http_session is unavailable. "
+                "Parser HTTP session shutdown is disabled."
+            ),
+        ),
+        close_redis_client=_import_optional_attr(
+            module_path="services.redis_client",
+            attr_name="close_redis_client",
+            warning_message=(
+                "services.redis_client.close_redis_client is unavailable. "
+                "Redis shutdown hook is disabled."
+            ),
+        ),
+        cleanup_all_reading_sessions=_import_optional_attr(
+            module_path="services.reading_session_store",
+            attr_name="cleanup_all_reading_sessions",
+            warning_message=(
+                "services.reading_session_store.cleanup_all_reading_sessions is unavailable. "
+                "Full reading session cleanup is disabled."
+            ),
+        ),
+        cleanup_expired_reading_sessions=_import_optional_attr(
+            module_path="services.reading_session_store",
+            attr_name="cleanup_expired_reading_sessions",
+            warning_message=(
+                "services.reading_session_store.cleanup_expired_reading_sessions is unavailable. "
+                "Background reading session cleanup is disabled."
+            ),
+        ),
+        close_reading_audio_queue=_import_optional_attr(
+            module_path="services.reading_service",
+            attr_name="close_reading_audio_queue",
+            warning_message=(
+                "services.reading_service.close_reading_audio_queue is unavailable. "
+                "Audio queue shutdown is disabled."
+            ),
+        ),
+        start_reading_audio_workers=_import_optional_attr(
+            module_path="services.reading_service",
+            attr_name="start_reading_audio_workers",
+            warning_message=(
+                "services.reading_service.start_reading_audio_workers is unavailable. "
+                "Audio workers startup is disabled."
+            ),
+        ),
+        run_maintenance_cleanup=_import_optional_attr(
+            module_path="services.maintenance_service",
+            attr_name="run_maintenance_cleanup",
+            warning_message=(
+                "services.maintenance_service.run_maintenance_cleanup is unavailable. "
+                "Maintenance cleanup worker is disabled."
+            ),
+        ),
+        close_telemetry_service=_import_optional_attr(
+            module_path="services.telemetry_service",
+            attr_name="close_telemetry_service",
+            warning_message=(
+                "services.telemetry_service.close_telemetry_service is unavailable. "
+                "Telemetry flush on shutdown is disabled."
+            ),
+        ),
+    )
 
 
 # ============================================================
@@ -270,21 +292,26 @@ ROUTERS_ORDER = [
 # BACKGROUND TASKS
 # ============================================================
 
-async def reading_session_cleanup_worker() -> None:
+async def reading_session_cleanup_worker(
+    cleanup_expired_sessions: AsyncHook | None = None,
+) -> None:
     """
     Фонове очищення застарілих reading-сесій.
 
     Потрібно, щоб сесії не залишались у пам'яті, якщо користувач
     почав читання, але не натиснув "Закінчити".
     """
-    if cleanup_expired_reading_sessions is None:
+    if cleanup_expired_sessions is None:
+        cleanup_expired_sessions = load_lifecycle_hooks().cleanup_expired_reading_sessions
+
+    if cleanup_expired_sessions is None:
         return
 
     while True:
         await asyncio.sleep(300)
 
         try:
-            cleaned_count = await cleanup_expired_reading_sessions()
+            cleaned_count = await cleanup_expired_sessions()
 
             if cleaned_count:
                 logger.info(
@@ -302,13 +329,18 @@ async def reading_session_cleanup_worker() -> None:
             await record_background_task_failure("reading_session_cleanup", error)
 
 
-async def maintenance_cleanup_worker() -> None:
-    if run_maintenance_cleanup is None:
+async def maintenance_cleanup_worker(
+    run_cleanup: AsyncHook | None = None,
+) -> None:
+    if run_cleanup is None:
+        run_cleanup = load_lifecycle_hooks().run_maintenance_cleanup
+
+    if run_cleanup is None:
         return
 
     while True:
         try:
-            await run_maintenance_cleanup()
+            await run_cleanup()
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -395,7 +427,10 @@ def include_project_routers(dp: Dispatcher) -> None:
 # MIDDLEWARES
 # ============================================================
 
-def setup_middlewares(dp: Dispatcher) -> None:
+def setup_middlewares(
+    dp: Dispatcher,
+    middleware_factories: MiddlewareFactories | None = None,
+) -> None:
     """
     Підключає middleware.
 
@@ -404,20 +439,22 @@ def setup_middlewares(dp: Dispatcher) -> None:
     2. BanMiddleware — глобальна перевірка бану;
     3. RateLimitMiddleware — захист від spam/flood.
     """
-    if UserActivityMiddleware is not None:
-        user_activity_middleware = UserActivityMiddleware()
+    factories = middleware_factories or load_middleware_factories()
+
+    if factories.user_activity is not None:
+        user_activity_middleware = factories.user_activity()
         dp.message.middleware(user_activity_middleware)
         dp.callback_query.middleware(user_activity_middleware)
         logger.info("Підключено UserActivityMiddleware")
 
-    if BanMiddleware is not None:
-        ban_middleware = BanMiddleware()
+    if factories.ban is not None:
+        ban_middleware = factories.ban()
         dp.message.middleware(ban_middleware)
         dp.callback_query.middleware(ban_middleware)
         logger.info("Підключено BanMiddleware")
 
-    if RATE_LIMIT_BACKEND == "redis" and RedisRateLimitMiddleware is not None:
-        rate_limit_middleware = RedisRateLimitMiddleware(
+    if RATE_LIMIT_BACKEND == "redis" and factories.redis_rate_limit is not None:
+        rate_limit_middleware = factories.redis_rate_limit(
             max_events=RATE_LIMIT_MAX_EVENTS,
             period_seconds=RATE_LIMIT_PERIOD_SECONDS,
             warning_cooldown_seconds=RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
@@ -427,14 +464,14 @@ def setup_middlewares(dp: Dispatcher) -> None:
         logger.info("Підключено RedisRateLimitMiddleware")
         return
 
-    if RATE_LIMIT_BACKEND == "redis" and RedisRateLimitMiddleware is None:
+    if RATE_LIMIT_BACKEND == "redis" and factories.redis_rate_limit is None:
         logger.warning(
             "RATE_LIMIT_BACKEND=redis, але RedisRateLimitMiddleware недоступний. "
             "Використовую in-memory RateLimitMiddleware."
         )
 
-    if RateLimitMiddleware is not None:
-        rate_limit_middleware = RateLimitMiddleware(
+    if factories.rate_limit is not None:
+        rate_limit_middleware = factories.rate_limit(
             max_events=RATE_LIMIT_MAX_EVENTS,
             period_seconds=RATE_LIMIT_PERIOD_SECONDS,
             warning_cooldown_seconds=RATE_LIMIT_WARNING_COOLDOWN_SECONDS,
@@ -720,11 +757,13 @@ async def setup_bot_commands(bot: Bot) -> None:
 # MAIN
 # ============================================================
 
-def create_bot_and_dispatcher() -> tuple[Bot, Dispatcher]:
+def create_bot_and_dispatcher(
+    middleware_factories: MiddlewareFactories | None = None,
+) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    setup_middlewares(dp)
+    setup_middlewares(dp, middleware_factories=middleware_factories)
     include_project_routers(dp)
 
     return bot, dp
@@ -784,6 +823,7 @@ async def _setup_webhook(bot: Bot, dp: Dispatcher) -> None:
 
 
 async def main() -> None:
+    lifecycle_hooks = load_lifecycle_hooks()
     bot, dp = create_bot_and_dispatcher()
 
     cleanup_task: asyncio.Task | None = None
@@ -794,18 +834,22 @@ async def main() -> None:
     await init_db()
     await setup_bot_commands(bot)
 
-    if start_reading_audio_workers is not None:
-        await start_reading_audio_workers()
+    if lifecycle_hooks.start_reading_audio_workers is not None:
+        await lifecycle_hooks.start_reading_audio_workers()
 
-    if cleanup_expired_reading_sessions is not None:
+    if lifecycle_hooks.cleanup_expired_reading_sessions is not None:
         cleanup_task = asyncio.create_task(
-            reading_session_cleanup_worker()
+            reading_session_cleanup_worker(
+                lifecycle_hooks.cleanup_expired_reading_sessions
+            )
         )
         logger.info("Фонове очищення reading-сесій запущено.")
 
-    if run_maintenance_cleanup is not None:
+    if lifecycle_hooks.run_maintenance_cleanup is not None:
         maintenance_task = asyncio.create_task(
-            maintenance_cleanup_worker()
+            maintenance_cleanup_worker(
+                lifecycle_hooks.run_maintenance_cleanup
+            )
         )
         logger.info("Фонове maintenance cleanup запущено.")
 
@@ -840,20 +884,20 @@ async def main() -> None:
             with suppress(asyncio.CancelledError):
                 await maintenance_task
 
-        if close_reading_audio_queue is not None:
-            await close_reading_audio_queue()
+        if lifecycle_hooks.close_reading_audio_queue is not None:
+            await lifecycle_hooks.close_reading_audio_queue()
 
-        if cleanup_all_reading_sessions is not None:
-            await cleanup_all_reading_sessions()
+        if lifecycle_hooks.cleanup_all_reading_sessions is not None:
+            await lifecycle_hooks.cleanup_all_reading_sessions()
 
-        if close_http_session is not None:
-            await close_http_session()
+        if lifecycle_hooks.close_http_session is not None:
+            await lifecycle_hooks.close_http_session()
 
-        if close_redis_client is not None:
-            await close_redis_client()
+        if lifecycle_hooks.close_redis_client is not None:
+            await lifecycle_hooks.close_redis_client()
 
-        if close_telemetry_service is not None:
-            await close_telemetry_service()
+        if lifecycle_hooks.close_telemetry_service is not None:
+            await lifecycle_hooks.close_telemetry_service()
 
         await bot.session.close()
         logger.info("Бот зупинено.")

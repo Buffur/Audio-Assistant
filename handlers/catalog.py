@@ -1,7 +1,6 @@
 # Файл: handlers/catalog.py
 
 import logging
-import uuid
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
@@ -40,12 +39,9 @@ from services.document_history_service import (
     get_recent_document_history,
 )
 from services.reading_service import (
-    cleanup_session,
     safe_delete_message,
     send_audio_chunk,
-)
-from services.reading_session_store import (
-    set_reading_session,
+    start_reading_session,
 )
 from texts.catalog import (
     CATALOG_CLEARED_TEXT,
@@ -74,41 +70,6 @@ def _callback_owner_matches(
     owner_id = parse_catalog_callback_user_id(callback.data, prefix)
 
     return callback_owner_matches(callback, owner_id)
-
-
-def _generate_session_id() -> str:
-    return uuid.uuid4().hex[:12]
-
-
-def _build_catalog_reading_session(document: dict, chunks: list[str]) -> dict:
-    session = {
-        "session_id": _generate_session_id(),
-        "chunks": chunks,
-        "index": 0,
-        "is_generating": True,
-        "prefetch_task": None,
-        "catalog_document_id": document.get("id"),
-    }
-
-    summary_text = str(document.get("summary_text") or "").strip()
-
-    if summary_text:
-        session["summary_text"] = summary_text
-        session["summary_delivered"] = False
-
-        summary_voice_file_ids = deserialize_voice_file_ids(
-            document.get("summary_voice_file_ids_json")
-        )
-
-        if summary_voice_file_ids:
-            session["summary_voice_file_ids"] = summary_voice_file_ids
-            session["summary_voice_voice"] = document.get("summary_voice_voice")
-            session["summary_voice_rate"] = document.get("summary_voice_rate")
-            session["summary_voice_provider"] = document.get(
-                "summary_voice_provider"
-            )
-
-    return session
 
 
 def _clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
@@ -366,11 +327,17 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     status_msg = await message.answer(CATALOG_OPENING_TEXT)
 
-    await cleanup_session(user_id)
-
-    await set_reading_session(
+    await start_reading_session(
         user_id=user_id,
-        session=_build_catalog_reading_session(document, chunks),
+        chunks=chunks,
+        catalog_document_id=document.get("id"),
+        summary_text=str(document.get("summary_text") or "").strip(),
+        summary_voice_file_ids=deserialize_voice_file_ids(
+            document.get("summary_voice_file_ids_json")
+        ),
+        summary_voice_voice=document.get("summary_voice_voice"),
+        summary_voice_rate=document.get("summary_voice_rate"),
+        summary_voice_provider=document.get("summary_voice_provider"),
     )
 
     await message.answer(

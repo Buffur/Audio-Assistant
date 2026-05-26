@@ -11,6 +11,7 @@ from keyboards import catalog as catalog_keyboard
 from keyboards import privacy as privacy_keyboard
 from keyboards import reading as reading_keyboard
 from keyboards import settings as settings_keyboard
+from services import reading_service
 from texts import admin_menu as admin_menu_texts
 from texts import catalog as catalog_texts
 from texts import messages as message_texts
@@ -428,16 +429,14 @@ def test_delete_my_data_confirmation_keyboard_and_text() -> None:
 
 
 def test_catalog_reading_session_restores_cached_summary() -> None:
-    session = catalog._build_catalog_reading_session(
-        document={
-            "id": 42,
-            "summary_text": "Cached summary",
-            "summary_voice_file_ids_json": '["voice-file-id"]',
-            "summary_voice_voice": "uk-UA-PolinaNeural",
-            "summary_voice_rate": "+0%",
-            "summary_voice_provider": "edge",
-        },
+    session = reading_service.create_reading_session(
         chunks=["one", "two"],
+        catalog_document_id=42,
+        summary_text="Cached summary",
+        summary_voice_file_ids=["voice-file-id"],
+        summary_voice_voice="uk-UA-PolinaNeural",
+        summary_voice_rate="+0%",
+        summary_voice_provider="edge",
     )
 
     assert session["catalog_document_id"] == 42
