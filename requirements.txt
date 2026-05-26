@@ -14,7 +14,6 @@ beautifulsoup4==4.14.3
 
 # Text-to-speech
 edge-tts==7.2.8
-piper-tts==1.4.2
 
 # Text language detection
 langdetect==1.0.9

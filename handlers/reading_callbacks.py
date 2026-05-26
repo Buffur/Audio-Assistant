@@ -36,6 +36,7 @@ from services.reading_session_store import (
 from services.tts import generate_voice
 from services.usage_limits_service import (
     is_premium_user,
+    refund_summary_generation,
     reserve_summary_generation,
 )
 from services.user_settings_service import (
@@ -68,6 +69,16 @@ from utils.text_checks import is_error_text
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+async def _refund_reserved_summary(user_id: int) -> None:
+    try:
+        await refund_summary_generation(user_id)
+    except Exception:
+        logger.exception(
+            "ReadingCallbacks: failed to refund reserved summary usage user_id=%s",
+            user_id,
+        )
 
 
 def _is_matching_session(
@@ -335,6 +346,21 @@ async def _send_cached_summary(
             reply_markup=keyboard,
         ) or []
 
+        if not sent_file_ids:
+            logger.warning(
+                "ReadingCallbacks: summary audio was generated but not delivered "
+                "for user_id=%s",
+                user_id,
+            )
+
+            await reply_with_voice(
+                callback.message,
+                user_id,
+                SUMMARY_AUDIO_GENERATION_ERROR,
+                status_msg,
+            )
+            return
+
         await _mark_summary_delivered(
             user_id,
             session,
@@ -517,6 +543,7 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
 
     status_msg = None
     callback_answered = False
+    summary_reserved = False
 
     try:
         if not callback.message:
@@ -557,6 +584,8 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             callback_answered = True
             return
 
+        summary_reserved = True
+
         await callback.answer()
         callback_answered = True
 
@@ -568,6 +597,8 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
         summary_text = await summarize_text_with_ai(full_text)
 
         if not summary_text or is_error_text(summary_text):
+            await _refund_reserved_summary(user_id)
+            summary_reserved = False
             await reply_with_voice(
                 callback.message,
                 user_id,
@@ -575,15 +606,6 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
                 status_msg,
             )
             return
-
-        await update_reading_session(
-            user_id,
-            summary_text=summary_text,
-            summary_delivered=False,
-        )
-        session["summary_text"] = summary_text
-        session["summary_delivered"] = False
-        await _save_session_summary_to_catalog(user_id, session, summary_text)
 
         voice_pref, rate = await get_effective_user_settings(user_id)
         tts_provider = await get_effective_user_tts_provider(user_id)
@@ -606,6 +628,8 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
                 user_id,
             )
 
+            await _refund_reserved_summary(user_id)
+            summary_reserved = False
             await reply_with_voice(
                 callback.message,
                 user_id,
@@ -622,6 +646,34 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             caption=SUMMARY_CAPTION_TEXT,
             reply_markup=keyboard,
         ) or []
+
+        if not sent_file_ids:
+            logger.warning(
+                "ReadingCallbacks: summary audio was generated but not delivered "
+                "for user_id=%s",
+                user_id,
+            )
+
+            await _refund_reserved_summary(user_id)
+            summary_reserved = False
+            await reply_with_voice(
+                callback.message,
+                user_id,
+                SUMMARY_AUDIO_GENERATION_ERROR,
+                status_msg,
+            )
+            return
+
+        summary_reserved = False
+
+        await update_reading_session(
+            user_id,
+            summary_text=summary_text,
+            summary_delivered=False,
+        )
+        session["summary_text"] = summary_text
+        session["summary_delivered"] = False
+        await _save_session_summary_to_catalog(user_id, session, summary_text)
 
         await _mark_summary_delivered(
             user_id,
@@ -640,9 +692,14 @@ async def process_read_summary(callback: types.CallbackQuery) -> None:
             tts_provider,
         )
 
+        summary_reserved = False
         await safe_delete_message(status_msg)
 
     except Exception:
+        if summary_reserved:
+            await _refund_reserved_summary(user_id)
+            summary_reserved = False
+
         logger.exception(
             "ReadingCallbacks: помилка генерації короткого змісту user_id=%s",
             user_id,

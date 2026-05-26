@@ -450,6 +450,18 @@ async def reserve_summary_generation(user_id: int) -> bool:
     )
 
 
+async def refund_summary_generation(user_id: int) -> None:
+    """
+    Повертає зарезервований summary-ліміт, якщо короткий зміст не був створений
+    або не був доставлений користувачу через помилку.
+    """
+    await decrement_daily_usage(
+        user_id=user_id,
+        usage_date=_today_key(),
+        field_name=USAGE_FIELD_SUMMARIES,
+    )
+
+
 async def grant_premium(user_id: int, days: int | None = None) -> str | None:
     if days is None:
         await set_user_premium(user_id=user_id, premium_until=None)

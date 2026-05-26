@@ -195,6 +195,15 @@ close_reading_audio_queue = _import_optional_attr(
     ),
 )
 
+start_reading_audio_workers = _import_optional_attr(
+    module_path="services.reading_service",
+    attr_name="start_reading_audio_workers",
+    warning_message=(
+        "services.reading_service не має start_reading_audio_workers. "
+        "Redis audio workers не будуть запущені на startup."
+    ),
+)
+
 run_maintenance_cleanup = _import_optional_attr(
     module_path="services.maintenance_service",
     attr_name="run_maintenance_cleanup",
@@ -736,6 +745,12 @@ async def _stop_api_server(server, task: asyncio.Task | None) -> None:
 
 
 async def _setup_webhook(bot: Bot, dp: Dispatcher) -> None:
+    if not TELEGRAM_WEBHOOK_SECRET_TOKEN:
+        raise RuntimeError(
+            "BOT_RUNTIME_MODE=webhook requires TELEGRAM_WEBHOOK_SECRET_TOKEN. "
+            "Set it in the environment before exposing the webhook endpoint."
+        )
+
     if not TELEGRAM_WEBHOOK_URL:
         logger.warning(
             "BOT_RUNTIME_MODE=webhook, but TELEGRAM_WEBHOOK_URL is empty. "
@@ -761,6 +776,9 @@ async def main() -> None:
 
     await init_db()
     await setup_bot_commands(bot)
+
+    if start_reading_audio_workers is not None:
+        await start_reading_audio_workers()
 
     if cleanup_expired_reading_sessions is not None:
         cleanup_task = asyncio.create_task(

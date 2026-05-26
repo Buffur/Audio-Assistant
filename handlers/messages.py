@@ -170,10 +170,15 @@ async def _process_message(message: types.Message, user_id: int) -> None:
 
     status_msg = await message.answer(ANALYZING_MATERIAL_TEXT)
 
-    text = await extract_text_from_message(
-        message=message,
-        status_msg=status_msg,
-    )
+    try:
+        text = await extract_text_from_message(
+            message=message,
+            status_msg=status_msg,
+        )
+    except Exception:
+        await _refund_reserved_input(user_id, usage_type)
+        await safe_delete_message(status_msg)
+        raise
 
     if not text or not text.strip() or is_error_text(text):
         error_text = text if is_error_text(text) else GENERIC_TEXT_EXTRACT_ERROR

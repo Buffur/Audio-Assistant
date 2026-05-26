@@ -20,8 +20,8 @@ async def test_user_settings_and_ban_flow(workspace_tmp_path, monkeypatch) -> No
     assert await db_module.get_user_settings(1) == ("uk-UA-OstapNeural", None)
 
     assert await db_module.get_user_tts_provider(1) is None
-    await db_module.set_user_tts_provider(1, "piper")
-    assert await db_module.get_user_tts_provider(1) == "piper"
+    await db_module.set_user_tts_provider(1, "custom")
+    assert await db_module.get_user_tts_provider(1) == "custom"
 
     assert await db_module.is_user_banned(1) is False
     await db_module.ban_user(1)
@@ -313,7 +313,7 @@ async def test_retention_and_delete_user_private_data(workspace_tmp_path, monkey
     await db_module.init_db()
     await db_module.register_or_update_user(1, "@tester", "Test User")
     await db_module.set_user_settings(1, voice="uk-UA-OstapNeural", rate="+25%")
-    await db_module.set_user_tts_provider(1, "piper")
+    await db_module.set_user_tts_provider(1, "custom")
     await db_module.set_user_premium(1, None)
     await db_module.ban_user(1)
     await db_module.increment_daily_usage(

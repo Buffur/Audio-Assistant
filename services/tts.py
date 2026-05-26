@@ -27,10 +27,6 @@ from services.gemini_tts import (
     generate_gemini_tts_ogg,
     get_gemini_tts_voice,
 )
-from services.piper_tts import (
-    generate_piper_tts_ogg,
-    get_piper_cache_voice_name,
-)
 from services.telemetry_service import record_service_metric
 from utils.audio import convert_to_ogg, create_temp_file_path, safe_remove_file
 from utils.splitter import MAX_LENGTH as DEFAULT_TTS_CHUNK_MAX_LENGTH
@@ -44,7 +40,7 @@ TTS_RETRY_BASE_DELAY_SECONDS = 0.8
 
 tts_semaphore = asyncio.Semaphore(TTS_CONCURRENCY_LIMIT)
 
-TTS_PROVIDER_NAMES = {"edge", "gemini", "piper"}
+TTS_PROVIDER_NAMES = {"edge", "gemini"}
 
 TTSProgressCallback = Callable[[int, int, str, bool], Awaitable[None]]
 
@@ -74,17 +70,13 @@ def _gemini_cache_voice_name(edge_voice: str) -> str:
     )
 
 
-def _piper_cache_voice_name(edge_voice: str) -> str:
-    return get_piper_cache_voice_name(edge_voice)
-
-
 def _provider_chain(provider_chain: list[str] | None = None) -> list[str]:
     providers = list(provider_chain or TTS_PROVIDER_CHAIN)
 
     if not providers:
         providers = [TTS_PROVIDER]
 
-        if TTS_PROVIDER in {"gemini", "piper"}:
+        if TTS_PROVIDER == "gemini":
             providers.append("edge")
 
     normalized_providers: list[str] = []
@@ -134,9 +126,6 @@ async def _notify_progress(
 def _cache_voice_for_provider(provider: str, voice: str) -> str:
     if provider == "gemini":
         return _gemini_cache_voice_name(voice)
-
-    if provider == "piper":
-        return _piper_cache_voice_name(voice)
 
     return voice
 
@@ -257,15 +246,6 @@ async def _generate_chunk_voice_with_provider(
 ) -> str:
     if provider == "gemini":
         return await generate_gemini_tts_ogg(
-            text=chunk,
-            voice=voice,
-            rate=rate,
-            chunk_index=chunk_index,
-            chunks_count=chunks_count,
-        )
-
-    if provider == "piper":
-        return await generate_piper_tts_ogg(
             text=chunk,
             voice=voice,
             rate=rate,

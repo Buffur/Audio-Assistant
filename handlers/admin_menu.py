@@ -115,6 +115,13 @@ async def _safe_edit_admin_message(
     text: str,
     reply_markup
 ) -> None:
+    if callback.message is None:
+        logger.warning(
+            "AdminMenu: callback.message відсутній для user_id=%s",
+            callback.from_user.id if callback.from_user else None,
+        )
+        return
+
     try:
         await callback.message.edit_text(
             text,

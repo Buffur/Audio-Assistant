@@ -102,7 +102,6 @@ def build_admin_limit_edit_text(
 SERVICE_PROVIDER_LABELS = {
     "edge": "Edge TTS",
     "gemini": "Gemini",
-    "piper": "Piper",
 }
 
 SERVICE_OPERATION_LABELS = {

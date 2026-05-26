@@ -12,6 +12,9 @@ router = Router()
 
 @router.message(Command("usage"))
 async def usage_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+
     user_id = message.from_user.id
 
     status = await get_user_usage_status(user_id)

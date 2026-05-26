@@ -75,6 +75,9 @@ async def _safe_edit_settings_message(callback: CallbackQuery, user_id: int) -> 
     Якщо Telegram не дозволяє редагувати повідомлення
     або текст не змінився, помилка логується, але не ламає сценарій.
     """
+    if callback.message is None:
+        return
+
     new_text = await get_settings_text(user_id)
 
     try:
@@ -102,6 +105,10 @@ async def _send_voice_preview(
     Якщо генерація не вдалася, користувач отримує текстове повідомлення,
     а помилка потрапляє в логи.
     """
+    if callback.message is None:
+        await callback.answer(SETTINGS_PREVIEW_TEXT, show_alert=True)
+        return
+
     try:
         audio_files = await generate_voice(
             text=text,
@@ -137,6 +144,9 @@ async def _send_voice_preview(
 @router.message(Command("settings"))
 @router.message(F.text == SETTINGS_BUTTON_TEXT)
 async def settings_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+
     text = await get_settings_text(message.from_user.id)
     await message.answer(text, reply_markup=settings_keyboard())
 

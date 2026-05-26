@@ -1,3 +1,5 @@
+import hmac
+import json
 import time
 from typing import Any
 
@@ -24,6 +26,7 @@ from services.redis_client import get_redis_client
 
 
 STARTED_AT = time.time()
+MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
 
 
 def _now() -> float:
@@ -42,6 +45,35 @@ async def _require_api_auth(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API token",
+        )
+
+
+def validate_webhook_security() -> None:
+    if BOT_RUNTIME_MODE == "webhook" and not TELEGRAM_WEBHOOK_SECRET_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_WEBHOOK_SECRET_TOKEN is required when "
+            "BOT_RUNTIME_MODE=webhook."
+        )
+
+
+def _is_valid_webhook_secret(received_secret: str | None) -> bool:
+    if not TELEGRAM_WEBHOOK_SECRET_TOKEN:
+        return BOT_RUNTIME_MODE != "webhook"
+
+    return hmac.compare_digest(
+        received_secret or "",
+        TELEGRAM_WEBHOOK_SECRET_TOKEN,
+    )
+
+
+def _ensure_webhook_body_size_allowed(content_length: int | None) -> None:
+    if content_length is None:
+        return
+
+    if content_length > MAX_WEBHOOK_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Webhook payload is too large",
         )
 
 
@@ -137,6 +169,8 @@ def create_app(
     bot: Bot | None = None,
     dispatcher: Dispatcher | None = None,
 ) -> FastAPI:
+    validate_webhook_security()
+
     app = FastAPI(
         title="Audio Assistant API",
         version=APP_VERSION,
@@ -194,12 +228,12 @@ def create_app(
     @app.post(TELEGRAM_WEBHOOK_PATH)
     async def telegram_webhook(
         request: Request,
+        content_length: int | None = Header(default=None),
         x_telegram_bot_api_secret_token: str | None = Header(default=None),
     ) -> dict[str, bool]:
-        if (
-            TELEGRAM_WEBHOOK_SECRET_TOKEN
-            and x_telegram_bot_api_secret_token != TELEGRAM_WEBHOOK_SECRET_TOKEN
-        ):
+        _ensure_webhook_body_size_allowed(content_length)
+
+        if not _is_valid_webhook_secret(x_telegram_bot_api_secret_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Telegram webhook secret",
@@ -213,7 +247,22 @@ def create_app(
                 detail="Telegram runtime is not attached",
             )
 
-        payload = await request.json()
+        raw_body = await request.body()
+
+        if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Webhook payload is too large",
+            )
+
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON payload",
+            ) from None
+
         update = types.Update.model_validate(payload, context={"bot": bot_instance})
         await dispatcher.feed_update(bot_instance, update)
 

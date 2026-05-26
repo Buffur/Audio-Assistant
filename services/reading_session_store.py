@@ -16,12 +16,20 @@ from services.redis_client import get_redis_client
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = READING_SESSION_TTL_SECONDS
+GENERATION_STALE_SECONDS = min(
+    max(READING_SESSION_TTL_SECONDS // 2, 10 * 60),
+    30 * 60,
+)
 SESSION_KEY_PREFIX = "reading:session:"
 SESSION_USERS_KEY = "reading:sessions:users"
 
 _reading_sessions: dict[int, dict[str, Any]] = {}
 _user_locks: dict[int, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
+
+
+class ReadingSessionStoreUnavailableError(RuntimeError):
+    pass
 
 
 def _now() -> float:
@@ -43,6 +51,82 @@ def _touch_session(session: dict[str, Any]) -> None:
 def _is_expired(session: dict[str, Any]) -> bool:
     updated_at = session.get("updated_at") or session.get("created_at") or _now()
     return (_now() - float(updated_at)) > SESSION_TTL_SECONDS
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_generation_stale(
+    session: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    if not session.get("is_generating"):
+        return False
+
+    current_time = _now() if now is None else now
+    started_at = _as_float(
+        session.get("generation_started_at")
+        or session.get("updated_at")
+        or session.get("created_at"),
+        current_time,
+    )
+
+    return current_time - started_at > GENERATION_STALE_SECONDS
+
+
+def _recover_stale_generation(
+    session: dict[str, Any],
+    user_id: int,
+    now: float | None = None,
+) -> None:
+    current_time = _now() if now is None else now
+    logger.warning(
+        "ReadingSessionStore: recovering stale generation user_id=%s session_id=%s",
+        user_id,
+        session.get("session_id"),
+    )
+    session["is_generating"] = False
+    session["generation_recovered_at"] = current_time
+
+
+def _prepare_session_defaults(session: dict[str, Any]) -> None:
+    current_time = _now()
+
+    session.setdefault("created_at", current_time)
+    session.setdefault("updated_at", current_time)
+    session.setdefault("is_generating", False)
+    session.setdefault("prefetch_task", None)
+
+    if session.get("is_generating") and not session.get("generation_started_at"):
+        session["generation_started_at"] = current_time
+
+
+def _updates_with_generation_metadata(fields: dict[str, Any]) -> dict[str, Any]:
+    updates = dict(fields)
+    current_time = _now()
+    updates["updated_at"] = current_time
+
+    if updates.get("is_generating") is True:
+        updates["generation_started_at"] = current_time
+    elif "is_generating" in updates and not updates.get("is_generating"):
+        updates["generation_finished_at"] = current_time
+
+    return updates
+
+
+def _raise_redis_unavailable(operation: str, user_id: int, error: Exception) -> None:
+    logger.exception(
+        "ReadingSessionStore: Redis %s failed; refusing memory fallback user_id=%s",
+        operation,
+        user_id,
+    )
+    raise ReadingSessionStoreUnavailableError(
+        f"Redis reading session store is unavailable during {operation}."
+    ) from error
 
 
 def _safe_remove_file(file_path: str | None) -> None:
@@ -185,10 +269,7 @@ async def _memory_set_session(user_id: int, session: dict[str, Any]) -> None:
     lock = await get_user_session_lock(user_id)
 
     async with lock:
-        session.setdefault("created_at", _now())
-        session.setdefault("updated_at", _now())
-        session.setdefault("is_generating", False)
-        session.setdefault("prefetch_task", None)
+        _prepare_session_defaults(session)
 
         _reading_sessions[user_id] = session
 
@@ -201,21 +282,13 @@ async def set_reading_session(user_id: int, session: dict[str, Any]) -> None:
     """
     await cleanup_reading_session(user_id)
 
-    session.setdefault("created_at", _now())
-    session.setdefault("updated_at", _now())
-    session.setdefault("is_generating", False)
-    session.setdefault("prefetch_task", None)
+    _prepare_session_defaults(session)
 
     if _use_redis_backend():
         try:
             await _redis_store_session(user_id, session)
-        except RedisError:
-            logger.exception(
-                "ReadingSessionStore: Redis set failed; falling back to memory "
-                "user_id=%s",
-                user_id,
-            )
-            await _memory_set_session(user_id, session)
+        except RedisError as error:
+            _raise_redis_unavailable("set", user_id, error)
         else:
             _reading_sessions[user_id] = _sanitize_session_for_redis(session)
     else:
@@ -233,20 +306,19 @@ async def get_reading_session(user_id: int) -> dict[str, Any] | None:
     if _use_redis_backend():
         try:
             session = await _redis_get_session(user_id)
-        except RedisError:
-            logger.exception(
-                "ReadingSessionStore: Redis get failed; falling back to memory "
-                "user_id=%s",
-                user_id,
-            )
-        else:
+
             if session is None:
-                return _reading_sessions.get(user_id)
+                return None
+
+            if _is_generation_stale(session):
+                _recover_stale_generation(session, user_id)
 
             _touch_session(session)
             await _redis_store_session(user_id, session)
             _reading_sessions[user_id] = session
             return session
+        except RedisError as error:
+            _raise_redis_unavailable("get", user_id, error)
 
     task_to_cleanup: asyncio.Task | None = None
     lock = await get_user_session_lock(user_id)
@@ -265,6 +337,9 @@ async def get_reading_session(user_id: int) -> dict[str, Any] | None:
             task_to_cleanup = session.get("prefetch_task")
             _reading_sessions.pop(user_id, None)
         else:
+            if _is_generation_stale(session):
+                _recover_stale_generation(session, user_id)
+
             _touch_session(session)
             return session
 
@@ -297,11 +372,24 @@ async def try_start_generation(user_id: int) -> bool:
 
                 local session = cjson.decode(raw_session)
                 if session["is_generating"] then
-                    return 2
+                    local generation_started_at = tonumber(
+                        session["generation_started_at"]
+                        or session["updated_at"]
+                        or session["created_at"]
+                        or ARGV[2]
+                    )
+
+                    if tonumber(ARGV[2]) - generation_started_at <= tonumber(ARGV[4]) then
+                        return 2
+                    end
+
+                    session["is_generating"] = false
+                    session["generation_recovered_at"] = tonumber(ARGV[2])
                 end
 
                 session["is_generating"] = true
                 session["updated_at"] = tonumber(ARGV[2])
+                session["generation_started_at"] = tonumber(ARGV[2])
                 redis.call("SETEX", KEYS[1], tonumber(ARGV[3]), cjson.encode(session))
                 redis.call("SADD", KEYS[2], ARGV[1])
                 return 1
@@ -312,6 +400,7 @@ async def try_start_generation(user_id: int) -> bool:
                 str(user_id),
                 str(_now()),
                 str(SESSION_TTL_SECONDS),
+                str(GENERATION_STALE_SECONDS),
             )
 
             if int(result) == 1:
@@ -320,12 +409,8 @@ async def try_start_generation(user_id: int) -> bool:
             if int(result) == 2:
                 return False
 
-        except RedisError:
-            logger.exception(
-                "ReadingSessionStore: Redis try_start failed; falling back to "
-                "memory user_id=%s",
-                user_id,
-            )
+        except RedisError as error:
+            _raise_redis_unavailable("try_start", user_id, error)
 
     task_to_cleanup: asyncio.Task | None = None
     lock = await get_user_session_lock(user_id)
@@ -340,9 +425,17 @@ async def try_start_generation(user_id: int) -> bool:
             task_to_cleanup = session.get("prefetch_task")
             _reading_sessions.pop(user_id, None)
         elif session.get("is_generating"):
-            return False
+            if not _is_generation_stale(session):
+                return False
+
+            _recover_stale_generation(session, user_id)
+            session["is_generating"] = True
+            session["generation_started_at"] = _now()
+            _touch_session(session)
+            return True
         else:
             session["is_generating"] = True
+            session["generation_started_at"] = _now()
             _touch_session(session)
             return True
 
@@ -356,8 +449,9 @@ async def finish_generation(user_id: int) -> None:
 
 async def update_reading_session(user_id: int, **fields: Any) -> None:
     if _use_redis_backend():
-        safe_fields = _sanitize_session_for_redis(fields)
-        safe_fields["updated_at"] = _now()
+        safe_fields = _sanitize_session_for_redis(
+            _updates_with_generation_metadata(fields)
+        )
 
         try:
             client = await get_redis_client()
@@ -392,12 +486,8 @@ async def update_reading_session(user_id: int, **fields: Any) -> None:
                 local_session = _reading_sessions.setdefault(user_id, {})
                 local_session.update(safe_fields)
             return
-        except RedisError:
-            logger.exception(
-                "ReadingSessionStore: Redis update failed; falling back to memory "
-                "user_id=%s",
-                user_id,
-            )
+        except RedisError as error:
+            _raise_redis_unavailable("update", user_id, error)
 
     lock = await get_user_session_lock(user_id)
 
@@ -407,7 +497,7 @@ async def update_reading_session(user_id: int, **fields: Any) -> None:
         if not session:
             return
 
-        session.update(fields)
+        session.update(_updates_with_generation_metadata(fields))
         _touch_session(session)
 
 
@@ -420,12 +510,8 @@ async def cleanup_reading_session(user_id: int) -> None:
             client = await get_redis_client()
             await client.delete(_session_key(user_id))
             await client.srem(SESSION_USERS_KEY, str(user_id))
-        except RedisError:
-            logger.exception(
-                "ReadingSessionStore: Redis cleanup failed; falling back to "
-                "memory user_id=%s",
-                user_id,
-            )
+        except RedisError as error:
+            _raise_redis_unavailable("cleanup", user_id, error)
 
     lock = await get_user_session_lock(user_id)
 
@@ -461,11 +547,11 @@ async def cleanup_expired_reading_sessions() -> int:
                 await client.srem(SESSION_USERS_KEY, *stale_user_ids)
 
             return len(stale_user_ids)
-        except (RedisError, ValueError):
-            logger.exception(
-                "ReadingSessionStore: Redis expired cleanup failed; falling back "
-                "to memory"
-            )
+        except RedisError as error:
+            _raise_redis_unavailable("expired_cleanup", 0, error)
+        except ValueError:
+            logger.exception("ReadingSessionStore: invalid Redis session user id")
+            return 0
 
     expired_user_ids: list[int] = []
 

@@ -256,53 +256,6 @@ async def test_generate_voice_uses_configured_provider_chain(monkeypatch) -> Non
     async def fail_generate_gemini_tts_ogg(**kwargs):
         raise RuntimeError("Gemini is unavailable")
 
-    async def fake_generate_piper_tts_ogg(**kwargs):
-        return "/tmp/piper.ogg"
-
-    async def fail_generate_chunk_voice(*args, **kwargs):
-        raise AssertionError("_generate_chunk_voice should not be called")
-
-    def fake_save_audio_to_cache(**kwargs):
-        saved.update(kwargs)
-
-    monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "piper", "edge"])
-    monkeypatch.setattr(
-        tts,
-        "split_text",
-        lambda text, max_length=None: ["generated"],
-    )
-    monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
-    monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
-    monkeypatch.setattr(tts, "generate_piper_tts_ogg", fake_generate_piper_tts_ogg)
-    monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
-    monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
-
-    result = await tts.generate_voice(
-        text="generated",
-        voice="uk-UA-PolinaNeural",
-        rate="+0%",
-        raise_on_error=True,
-    )
-
-    assert result == ["/tmp/piper.ogg"]
-    assert saved["text"] == "generated"
-    assert saved["voice"].startswith("piper:")
-    assert saved["rate"] == "+0%"
-    assert saved["audio_path"] == "/tmp/piper.ogg"
-
-
-@pytest.mark.asyncio
-async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
-    monkeypatch,
-) -> None:
-    saved = {}
-
-    async def fail_generate_gemini_tts_ogg(**kwargs):
-        raise RuntimeError("Gemini is unavailable")
-
-    async def fail_generate_piper_tts_ogg(**kwargs):
-        raise RuntimeError("Piper is unavailable")
-
     async def fake_generate_chunk_voice(
         chunk,
         voice,
@@ -315,7 +268,7 @@ async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
     def fake_save_audio_to_cache(**kwargs):
         saved.update(kwargs)
 
-    monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "piper", "edge"])
+    monkeypatch.setattr(tts, "TTS_PROVIDER_CHAIN", ["gemini", "edge"])
     monkeypatch.setattr(
         tts,
         "split_text",
@@ -323,7 +276,6 @@ async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
     )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
     monkeypatch.setattr(tts, "generate_gemini_tts_ogg", fail_generate_gemini_tts_ogg)
-    monkeypatch.setattr(tts, "generate_piper_tts_ogg", fail_generate_piper_tts_ogg)
     monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
     monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
 
@@ -335,12 +287,10 @@ async def test_generate_voice_uses_edge_after_gemini_and_piper_fail(
     )
 
     assert result == ["/tmp/edge.ogg"]
-    assert saved == {
-        "text": "generated",
-        "voice": "uk-UA-PolinaNeural",
-        "rate": "+0%",
-        "audio_path": "/tmp/edge.ogg",
-    }
+    assert saved["text"] == "generated"
+    assert saved["voice"] == "uk-UA-PolinaNeural"
+    assert saved["rate"] == "+0%"
+    assert saved["audio_path"] == "/tmp/edge.ogg"
 
 
 @pytest.mark.asyncio
@@ -390,14 +340,19 @@ async def test_generate_voice_falls_back_to_edge_after_gemini_quota_without_erro
 
 
 @pytest.mark.asyncio
-async def test_generate_voice_uses_explicit_provider_chain(monkeypatch) -> None:
+async def test_generate_voice_ignores_removed_provider_in_explicit_chain(
+    monkeypatch,
+) -> None:
     saved = {}
 
-    async def fake_generate_piper_tts_ogg(**kwargs):
-        return "/tmp/piper.ogg"
-
-    async def fail_generate_chunk_voice(*args, **kwargs):
-        raise AssertionError("_generate_chunk_voice should not be called")
+    async def fake_generate_chunk_voice(
+        chunk,
+        voice,
+        rate,
+        chunk_index,
+        chunks_count,
+    ):
+        return "/tmp/edge.ogg"
 
     def fake_save_audio_to_cache(**kwargs):
         saved.update(kwargs)
@@ -408,20 +363,19 @@ async def test_generate_voice_uses_explicit_provider_chain(monkeypatch) -> None:
         lambda text, max_length=None: ["generated"],
     )
     monkeypatch.setattr(tts, "get_audio_from_cache", lambda **kwargs: None)
-    monkeypatch.setattr(tts, "generate_piper_tts_ogg", fake_generate_piper_tts_ogg)
-    monkeypatch.setattr(tts, "_generate_chunk_voice", fail_generate_chunk_voice)
+    monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
     monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
 
     result = await tts.generate_voice(
         text="generated",
         voice="uk-UA-PolinaNeural",
         rate="+0%",
-        provider_chain=["piper", "edge"],
+        provider_chain=["removed-provider", "edge"],
         raise_on_error=True,
     )
 
-    assert result == ["/tmp/piper.ogg"]
-    assert saved["voice"].startswith("piper:")
+    assert result == ["/tmp/edge.ogg"]
+    assert saved["voice"] == "uk-UA-PolinaNeural"
 
 
 @pytest.mark.asyncio

@@ -128,11 +128,11 @@ async def test_user_settings_service_defaults_and_validation(monkeypatch) -> Non
     assert user_settings_service.build_user_tts_provider_chain("edge") == [
         "edge",
     ]
-    assert user_settings_service.build_user_tts_provider_chain("piper") == [
+    assert user_settings_service.build_user_tts_provider_chain("removed-provider") == [
         "edge",
     ]
     assert user_settings_service.build_user_tts_provider_chain(
-        "piper",
+        "removed-provider",
         voice="en-US-JennyNeural",
     ) == ["edge"]
     assert user_settings_service.build_user_tts_provider_chain(
@@ -186,35 +186,28 @@ def test_parser_url_and_text_helpers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parser_ai_provider_chain_uses_ollama_first(monkeypatch) -> None:
-    async def fake_ollama(prompt, temperature):
-        fake_ollama.called_with = {
+async def test_parser_ai_provider_chain_ignores_removed_provider(monkeypatch) -> None:
+    async def fake_gemini(prompt, temperature):
+        fake_gemini.called_with = {
             "prompt": prompt,
             "temperature": temperature,
         }
         return "Локальний результат"
 
-    async def fail_gemini(prompt, temperature):
-        raise AssertionError("Gemini should not be called")
-
-    monkeypatch.setattr(parser, "AI_PROVIDER_CHAIN", ["ollama", "gemini"])
-    monkeypatch.setattr(parser, "_generate_text_with_ollama", fake_ollama)
-    monkeypatch.setattr(parser, "_generate_text_with_gemini", fail_gemini)
+    monkeypatch.setattr(parser, "AI_PROVIDER_CHAIN", ["removed-provider", "gemini"])
+    monkeypatch.setattr(parser, "_generate_text_with_gemini", fake_gemini)
 
     result = await parser._generate_ai_text("prompt", temperature=0.1)
 
     assert result == "Локальний результат"
-    assert fake_ollama.called_with == {
+    assert fake_gemini.called_with == {
         "prompt": "prompt",
         "temperature": 0.1,
     }
 
 
 @pytest.mark.asyncio
-async def test_parser_ai_provider_chain_falls_back_to_gemini(monkeypatch) -> None:
-    async def fail_ollama(prompt, temperature):
-        raise RuntimeError("Ollama is unavailable")
-
+async def test_parser_ai_provider_chain_uses_gemini(monkeypatch) -> None:
     async def fake_gemini(prompt, temperature):
         fake_gemini.called_with = {
             "prompt": prompt,
@@ -222,8 +215,7 @@ async def test_parser_ai_provider_chain_falls_back_to_gemini(monkeypatch) -> Non
         }
         return "Gemini результат"
 
-    monkeypatch.setattr(parser, "AI_PROVIDER_CHAIN", ["ollama", "gemini"])
-    monkeypatch.setattr(parser, "_generate_text_with_ollama", fail_ollama)
+    monkeypatch.setattr(parser, "AI_PROVIDER_CHAIN", ["gemini"])
     monkeypatch.setattr(parser, "_generate_text_with_gemini", fake_gemini)
 
     result = await parser._generate_ai_text("prompt", temperature=0.2)

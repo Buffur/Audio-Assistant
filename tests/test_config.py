@@ -158,17 +158,6 @@ def test_tts_provider_supports_edge_and_gemini() -> None:
     assert gemini_settings.TTS_PROVIDER == "gemini"
 
 
-def test_tts_provider_supports_piper() -> None:
-    settings = Settings(
-        BOT_TOKEN="123456:test_bot_token",
-        GEMINI_API_KEY="test_gemini_api_key",
-        ADMIN_IDS="111",
-        TTS_PROVIDER="piper",
-    )
-
-    assert settings.TTS_PROVIDER == "piper"
-
-
 def test_tts_provider_rejects_unknown_value() -> None:
     with pytest.raises(ValueError):
         Settings(
@@ -184,10 +173,10 @@ def test_tts_provider_chain_supports_ordered_fallbacks() -> None:
         BOT_TOKEN="123456:test_bot_token",
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
-        TTS_PROVIDER_CHAIN="gemini,piper,edge",
+        TTS_PROVIDER_CHAIN="gemini,edge",
     )
 
-    assert settings.TTS_PROVIDER_CHAIN == ["gemini", "piper", "edge"]
+    assert settings.TTS_PROVIDER_CHAIN == ["gemini", "edge"]
 
 
 def test_tts_provider_chain_rejects_unknown_value() -> None:
@@ -205,10 +194,10 @@ def test_ai_provider_chain_supports_ordered_fallbacks() -> None:
         BOT_TOKEN="123456:test_bot_token",
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
-        AI_PROVIDER_CHAIN="ollama,gemini",
+        AI_PROVIDER_CHAIN="gemini",
     )
 
-    assert settings.AI_PROVIDER_CHAIN == ["ollama", "gemini"]
+    assert settings.AI_PROVIDER_CHAIN == ["gemini"]
 
 
 def test_gemini_model_chains_parse_unique_values() -> None:
@@ -260,7 +249,7 @@ def test_ai_provider_chain_rejects_unknown_value() -> None:
             BOT_TOKEN="123456:test_bot_token",
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
-            AI_PROVIDER_CHAIN="ollama,unknown,gemini",
+            AI_PROVIDER_CHAIN="removed-provider,gemini",
         )
 
 

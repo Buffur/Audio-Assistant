@@ -36,12 +36,6 @@ class Settings(BaseSettings):
             "gemini-2.5-flash-lite",
         ]
     )
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen3:8b"
-    OLLAMA_TIMEOUT_SECONDS: int = 120
-    OLLAMA_NUM_CTX: int = 16_384
-    OLLAMA_KEEP_ALIVE: str = "10m"
-
     GEMINI_REQUEST_TIMEOUT_SECONDS: int = 45
     GEMINI_RETRY_ATTEMPTS: int = 2
     GEMINI_RETRY_BASE_DELAY_SECONDS: float = 1.0
@@ -78,15 +72,6 @@ class Settings(BaseSettings):
     )
     GEMINI_TTS_REQUEST_TIMEOUT_SECONDS: int = 120
     GEMINI_TTS_CHUNK_MAX_LENGTH: int = 1600
-    PIPER_EXECUTABLE: str = "piper"
-    PIPER_MODELS_DIR: str = str(BASE_DIR / "data" / "piper")
-    PIPER_MODEL_PATH: str = ""
-    PIPER_CONFIG_PATH: str = ""
-    PIPER_LANGUAGE_MODELS_JSON: str = ""
-    PIPER_SPEAKER: int | None = None
-    PIPER_LENGTH_SCALE: float = 1.0
-    PIPER_TIMEOUT_SECONDS: int = 60
-
     ADMIN_IDS: Annotated[list[int], NoDecode] = Field(default_factory=list)
     HIDE_USER_COMMANDS: bool = True
     CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP: bool = False
@@ -236,14 +221,11 @@ class Settings(BaseSettings):
         "FREE_DAILY_OCR_LIMIT",
         "FREE_DAILY_LINK_LIMIT",
         "FREE_DAILY_SUMMARY_LIMIT",
-        "OLLAMA_TIMEOUT_SECONDS",
-        "OLLAMA_NUM_CTX",
         "GEMINI_REQUEST_TIMEOUT_SECONDS",
         "GEMINI_RETRY_ATTEMPTS",
         "OCR_MIN_TEXT_LENGTH",
         "GEMINI_TTS_REQUEST_TIMEOUT_SECONDS",
         "GEMINI_TTS_CHUNK_MAX_LENGTH",
-        "PIPER_TIMEOUT_SECONDS",
         "DOCUMENT_HISTORY_RETENTION_DAYS",
         "SERVICE_METRICS_RETENTION_DAYS",
         "MAINTENANCE_CLEANUP_INTERVAL_SECONDS",
@@ -301,9 +283,9 @@ class Settings(BaseSettings):
             if not provider:
                 continue
 
-            if provider not in {"ollama", "gemini"}:
+            if provider not in {"gemini"}:
                 raise ValueError(
-                    "AI_PROVIDER_CHAIN must contain only ollama or gemini"
+                    "AI_PROVIDER_CHAIN must contain only gemini"
                 )
 
             if provider not in normalized_providers:
@@ -408,9 +390,9 @@ class Settings(BaseSettings):
     def _validate_tts_provider(cls, value: str) -> str:
         value = value.strip().lower()
 
-        if value not in {"edge", "gemini", "piper"}:
+        if value not in {"edge", "gemini"}:
             raise ValueError(
-                "TTS_PROVIDER must be 'edge', 'gemini', or 'piper'"
+                "TTS_PROVIDER must be 'edge' or 'gemini'"
             )
 
         return value
@@ -443,9 +425,9 @@ class Settings(BaseSettings):
             if not provider:
                 continue
 
-            if provider not in {"edge", "gemini", "piper"}:
+            if provider not in {"edge", "gemini"}:
                 raise ValueError(
-                    "TTS_PROVIDER_CHAIN must contain only edge, gemini, or piper"
+                    "TTS_PROVIDER_CHAIN must contain only edge or gemini"
                 )
 
             if provider not in normalized_providers:
@@ -453,21 +435,9 @@ class Settings(BaseSettings):
 
         return normalized_providers
 
-    @field_validator("PIPER_SPEAKER", mode="before")
-    @classmethod
-    def _parse_optional_int(cls, value: Any) -> int | None:
-        if value is None:
-            return None
-
-        if isinstance(value, str) and not value.strip():
-            return None
-
-        return value
-
     @field_validator(
         "GEMINI_RETRY_BASE_DELAY_SECONDS",
         "GEMINI_RETRY_MAX_DELAY_SECONDS",
-        "PIPER_LENGTH_SCALE",
     )
     @classmethod
     def _validate_positive_float(cls, value: float, info: Any) -> float:
@@ -499,12 +469,6 @@ DEFAULT_RATE = settings.DEFAULT_RATE
 AI_PROVIDER_CHAIN = settings.AI_PROVIDER_CHAIN
 GEMINI_TEXT_MODEL = settings.GEMINI_TEXT_MODEL
 GEMINI_TEXT_MODEL_CHAIN = settings.GEMINI_TEXT_MODEL_CHAIN
-OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
-OLLAMA_MODEL = settings.OLLAMA_MODEL
-OLLAMA_TIMEOUT_SECONDS = settings.OLLAMA_TIMEOUT_SECONDS
-OLLAMA_NUM_CTX = settings.OLLAMA_NUM_CTX
-OLLAMA_KEEP_ALIVE = settings.OLLAMA_KEEP_ALIVE
-
 GEMINI_REQUEST_TIMEOUT_SECONDS = settings.GEMINI_REQUEST_TIMEOUT_SECONDS
 GEMINI_RETRY_ATTEMPTS = settings.GEMINI_RETRY_ATTEMPTS
 GEMINI_RETRY_BASE_DELAY_SECONDS = settings.GEMINI_RETRY_BASE_DELAY_SECONDS
@@ -531,15 +495,6 @@ GEMINI_TTS_MALE_VOICE = settings.GEMINI_TTS_MALE_VOICE
 GEMINI_TTS_STYLE_PROMPT = settings.GEMINI_TTS_STYLE_PROMPT
 GEMINI_TTS_REQUEST_TIMEOUT_SECONDS = settings.GEMINI_TTS_REQUEST_TIMEOUT_SECONDS
 GEMINI_TTS_CHUNK_MAX_LENGTH = settings.GEMINI_TTS_CHUNK_MAX_LENGTH
-PIPER_EXECUTABLE = settings.PIPER_EXECUTABLE
-PIPER_MODELS_DIR = settings.PIPER_MODELS_DIR
-PIPER_MODEL_PATH = settings.PIPER_MODEL_PATH
-PIPER_CONFIG_PATH = settings.PIPER_CONFIG_PATH
-PIPER_LANGUAGE_MODELS_JSON = settings.PIPER_LANGUAGE_MODELS_JSON
-PIPER_SPEAKER = settings.PIPER_SPEAKER
-PIPER_LENGTH_SCALE = settings.PIPER_LENGTH_SCALE
-PIPER_TIMEOUT_SECONDS = settings.PIPER_TIMEOUT_SECONDS
-
 ADMIN_IDS = settings.ADMIN_IDS
 HIDE_USER_COMMANDS = settings.HIDE_USER_COMMANDS
 CLEAR_KNOWN_USER_COMMANDS_ON_STARTUP = (

@@ -417,6 +417,151 @@ async def test_read_summary_limit_rejection_releases_generation_flag(
 
 
 @pytest.mark.asyncio
+async def test_read_summary_refunds_limit_when_ai_returns_error(monkeypatch) -> None:
+    captured = {}
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 0,
+            "is_generating": False,
+        },
+    )
+
+    async def fake_reserve_summary_generation(user_id: int) -> bool:
+        captured["reserved_for"] = user_id
+        return True
+
+    async def fake_refund_summary_generation(user_id: int) -> None:
+        captured["refunded_for"] = user_id
+
+    async def fake_summarize_text_with_ai(text: str) -> str:
+        return reading_callbacks.SUMMARY_GENERATION_ERROR
+
+    async def fail_async(*args, **kwargs):
+        raise AssertionError("AI error must stop before TTS")
+
+    monkeypatch.setattr(
+        reading_callbacks,
+        "reserve_summary_generation",
+        fake_reserve_summary_generation,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "refund_summary_generation",
+        fake_refund_summary_generation,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "summarize_text_with_ai",
+        fake_summarize_text_with_ai,
+    )
+    monkeypatch.setattr(reading_callbacks, "generate_voice", fail_async)
+
+    callback = FakeCallback()
+
+    await reading_callbacks.process_read_summary(callback)
+
+    session = await store.get_reading_session(1)
+
+    assert captured == {
+        "reserved_for": 1,
+        "refunded_for": 1,
+    }
+    assert callback.message.answers == [
+        reading_callbacks.SUMMARY_PREPARING_TEXT,
+        reading_callbacks.SUMMARY_GENERATION_ERROR,
+    ]
+    assert session["is_generating"] is False
+    assert "summary_text" not in session
+
+
+@pytest.mark.asyncio
+async def test_read_summary_refunds_limit_when_tts_fails(monkeypatch) -> None:
+    captured = {}
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 0,
+            "is_generating": False,
+        },
+    )
+
+    async def fake_reserve_summary_generation(user_id: int) -> bool:
+        captured["reserved_for"] = user_id
+        return True
+
+    async def fake_refund_summary_generation(user_id: int) -> None:
+        captured["refunded_for"] = user_id
+
+    async def fake_summarize_text_with_ai(text: str) -> str:
+        return "summary text"
+
+    async def fake_get_effective_user_settings(user_id: int):
+        return "uk-UA-PolinaNeural", "+0%"
+
+    async def fake_get_effective_user_tts_provider(user_id: int) -> str:
+        return "edge"
+
+    async def fake_generate_voice(**kwargs):
+        return []
+
+    monkeypatch.setattr(
+        reading_callbacks,
+        "reserve_summary_generation",
+        fake_reserve_summary_generation,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "refund_summary_generation",
+        fake_refund_summary_generation,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "summarize_text_with_ai",
+        fake_summarize_text_with_ai,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_settings",
+        fake_get_effective_user_settings,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "get_effective_user_tts_provider",
+        fake_get_effective_user_tts_provider,
+    )
+    monkeypatch.setattr(
+        reading_callbacks,
+        "select_voice_for_text",
+        lambda text, voice_pref: "uk-UA-PolinaNeural",
+    )
+    monkeypatch.setattr(reading_callbacks, "generate_voice", fake_generate_voice)
+
+    callback = FakeCallback()
+
+    await reading_callbacks.process_read_summary(callback)
+
+    session = await store.get_reading_session(1)
+
+    assert captured == {
+        "reserved_for": 1,
+        "refunded_for": 1,
+    }
+    assert callback.message.answers == [
+        reading_callbacks.SUMMARY_PREPARING_TEXT,
+        reading_callbacks.SUMMARY_AUDIO_GENERATION_ERROR,
+    ]
+    assert session["is_generating"] is False
+    assert "summary_text" not in session
+
+
+@pytest.mark.asyncio
 async def test_read_next_keeps_summary_button_until_cached_summary_is_shown(
     monkeypatch,
 ) -> None:

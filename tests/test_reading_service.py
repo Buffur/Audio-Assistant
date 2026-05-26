@@ -1,5 +1,8 @@
+import json
+
 import pytest
 import pytest_asyncio
+from redis.exceptions import RedisError
 
 from keyboards.reading import READ_SUMMARY_ACTION
 from services import reading_service
@@ -45,6 +48,27 @@ async def cleanup_reading_state():
     await reading_service.close_reading_audio_queue(timeout_seconds=0.1)
     await store.cleanup_all_reading_sessions()
     reading_service._privacy_delete_markers.clear()
+
+
+@pytest.mark.asyncio
+async def test_reply_with_voice_sends_error_text_without_tts(monkeypatch) -> None:
+    message = FakeMessage()
+    status_msg = FakeStatusMessage("processing")
+
+    async def fail_generate_voice(*args, **kwargs):
+        raise AssertionError("error text must not use TTS")
+
+    monkeypatch.setattr(reading_service, "generate_voice", fail_generate_voice)
+
+    await reading_service.reply_with_voice(
+        message=message,
+        user_id=1,
+        text=reading_service.CHUNK_AUDIO_GENERATION_ERROR,
+        status_msg=status_msg,
+    )
+
+    assert message.answers == [reading_service.CHUNK_AUDIO_GENERATION_ERROR]
+    assert status_msg.deleted is True
 
 
 @pytest.mark.asyncio
@@ -187,6 +211,133 @@ async def test_send_audio_chunk_reports_full_redis_queue_without_memory_fallback
 
     assert reading_service.AUDIO_QUEUE_FULL_TEXT in message.answers
     assert message.status_messages[0].deleted is True
+
+
+@pytest.mark.asyncio
+async def test_send_audio_chunk_reports_redis_queue_failure_without_memory_fallback(
+    monkeypatch,
+) -> None:
+    async def fake_queue_position() -> int:
+        return 1
+
+    async def fake_enqueue(job) -> None:
+        raise RedisError("redis down")
+
+    def fail_memory_queue():
+        raise AssertionError("Redis outage must not fall back to memory queue")
+
+    monkeypatch.setattr(reading_service, "READING_AUDIO_QUEUE_BACKEND", "redis")
+    monkeypatch.setattr(
+        reading_service,
+        "_redis_audio_queue_position",
+        fake_queue_position,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_enqueue_redis_audio_job",
+        fake_enqueue,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_ensure_audio_generation_queue",
+        fail_memory_queue,
+    )
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-redis-down",
+            "chunks": ["one"],
+            "index": 0,
+        },
+    )
+
+    message = FakeMessage()
+
+    await reading_service.send_audio_chunk(message, user_id=1)
+
+    session = await store.get_reading_session(1)
+
+    assert reading_service.BACKGROUND_GENERATION_ERROR in message.answers
+    assert message.status_messages[0].deleted is True
+    assert session["is_generating"] is False
+
+
+@pytest.mark.asyncio
+async def test_enqueue_redis_audio_job_uses_pending_list(monkeypatch) -> None:
+    captured = {}
+
+    class FakeRedis:
+        async def llen(self, key: str) -> int:
+            captured["llen_key"] = key
+            return 0
+
+        async def lpush(self, key: str, value: str) -> None:
+            captured["lpush_key"] = key
+            captured["payload"] = value
+
+    async def fake_start_workers() -> None:
+        captured["started"] = True
+
+    async def fake_get_redis_client():
+        return FakeRedis()
+
+    monkeypatch.setattr(reading_service, "start_reading_audio_workers", fake_start_workers)
+    monkeypatch.setattr(reading_service, "get_redis_client", fake_get_redis_client)
+
+    await reading_service._enqueue_redis_audio_job(
+        {
+            "type": "send_chunk",
+            "user_id": 1,
+        }
+    )
+
+    assert captured["started"] is True
+    assert captured["llen_key"] == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["lpush_key"] == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
+    assert '"type":"send_chunk"' in captured["payload"]
+
+
+def test_serialize_audio_job_adds_unique_job_id() -> None:
+    first = json.loads(reading_service._serialize_audio_job({"type": "send_chunk"}))
+    second = json.loads(reading_service._serialize_audio_job({"type": "send_chunk"}))
+
+    assert first["job_id"]
+    assert second["job_id"]
+    assert first["job_id"] != second["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_requeue_interrupted_redis_audio_jobs(monkeypatch) -> None:
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.processing = ["job-1", "job-2"]
+            self.pending = []
+
+        async def rpoplpush(self, source: str, destination: str):
+            assert source == reading_service.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+            assert destination == reading_service.READING_AUDIO_QUEUE_REDIS_KEY
+
+            if not self.processing:
+                return None
+
+            job = self.processing.pop()
+            self.pending.insert(0, job)
+            return job
+
+    fake_redis = FakeRedis()
+
+    async def fake_get_redis_client():
+        return fake_redis
+
+    monkeypatch.setattr(reading_service, "get_redis_client", fake_get_redis_client)
+    reading_service._redis_audio_queue_recovered = False
+
+    moved_count = await reading_service._requeue_interrupted_redis_audio_jobs()
+
+    assert moved_count == 2
+    assert fake_redis.processing == []
+    assert fake_redis.pending == ["job-1", "job-2"]
 
 
 @pytest.mark.asyncio

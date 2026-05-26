@@ -111,6 +111,18 @@ def test_webhook_requires_attached_runtime() -> None:
     assert response.status_code == 503
 
 
+def test_webhook_mode_requires_secret(monkeypatch) -> None:
+    monkeypatch.setattr(api_app, "BOT_RUNTIME_MODE", "webhook")
+    monkeypatch.setattr(api_app, "TELEGRAM_WEBHOOK_SECRET_TOKEN", "")
+
+    try:
+        api_app.create_app()
+    except RuntimeError as error:
+        assert "TELEGRAM_WEBHOOK_SECRET_TOKEN" in str(error)
+    else:
+        raise AssertionError("webhook mode must fail fast without secret")
+
+
 def test_webhook_rejects_invalid_secret(monkeypatch) -> None:
     monkeypatch.setattr(api_app, "TELEGRAM_WEBHOOK_SECRET_TOKEN", "secret")
 
@@ -122,6 +134,20 @@ def test_webhook_rejects_invalid_secret(monkeypatch) -> None:
     )
 
     assert response.status_code == 401
+
+
+def test_webhook_rejects_oversized_payload(monkeypatch) -> None:
+    monkeypatch.setattr(api_app, "TELEGRAM_WEBHOOK_SECRET_TOKEN", "secret")
+    monkeypatch.setattr(api_app, "MAX_WEBHOOK_BODY_BYTES", 8)
+
+    client = TestClient(api_app.create_app())
+    response = client.post(
+        "/webhook/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "secret"},
+        content=b'{"update_id":123}',
+    )
+
+    assert response.status_code == 413
 
 
 def test_webhook_feeds_update_to_dispatcher() -> None:
@@ -143,6 +169,34 @@ def test_webhook_feeds_update_to_dispatcher() -> None:
         assert response.json() == {"ok": True}
         assert dispatcher.updates[0][0] is bot
         assert dispatcher.updates[0][1].update_id == 123
+
+    finally:
+        asyncio.run(bot.session.close())
+
+
+def test_webhook_accepts_valid_secret(monkeypatch) -> None:
+    class FakeDispatcher:
+        def __init__(self) -> None:
+            self.updates = []
+
+        async def feed_update(self, bot, update) -> None:
+            self.updates.append((bot, update))
+
+    monkeypatch.setattr(api_app, "TELEGRAM_WEBHOOK_SECRET_TOKEN", "secret")
+
+    bot = Bot(token="123456:test_bot_token")
+    dispatcher = FakeDispatcher()
+
+    try:
+        client = TestClient(api_app.create_app(bot=bot, dispatcher=dispatcher))
+        response = client.post(
+            "/webhook/telegram",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "secret"},
+            json={"update_id": 456},
+        )
+
+        assert response.status_code == 200
+        assert dispatcher.updates[0][1].update_id == 456
 
     finally:
         asyncio.run(bot.session.close())

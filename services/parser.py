@@ -14,7 +14,6 @@ from google.genai import types
 
 from config import AI_PROVIDER_CHAIN, GEMINI_TEXT_MODEL, GEMINI_TEXT_MODEL_CHAIN
 from services.gemini_client import generate_gemini_content_with_fallback
-from services.ollama_ai import generate_ollama_text
 from utils.splitter import split_text
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,7 @@ MAX_REDIRECTS = 5
 
 AI_MODEL = GEMINI_TEXT_MODEL
 AI_MODEL_CHAIN = GEMINI_TEXT_MODEL_CHAIN
-AI_PROVIDER_NAMES = {"ollama", "gemini"}
+AI_PROVIDER_NAMES = {"gemini"}
 
 HEADERS = {
     "User-Agent": (
@@ -348,24 +347,12 @@ async def _generate_text_with_gemini(prompt: str, temperature: float) -> str | N
     return _strip_ai_output(response.text or "")
 
 
-async def _generate_text_with_ollama(prompt: str, temperature: float) -> str | None:
-    result = await generate_ollama_text(
-        prompt=prompt,
-        temperature=temperature,
-    )
-
-    return _strip_ai_output(result)
-
-
 async def _generate_ai_text(prompt: str, temperature: float) -> str | None:
     provider_errors: list[str] = []
 
     for provider in _ai_provider_chain():
         try:
-            if provider == "ollama":
-                result = await _generate_text_with_ollama(prompt, temperature)
-            else:
-                result = await _generate_text_with_gemini(prompt, temperature)
+            result = await _generate_text_with_gemini(prompt, temperature)
 
             if result:
                 logger.info("AI provider=%s успішно повернув текст.", provider)
