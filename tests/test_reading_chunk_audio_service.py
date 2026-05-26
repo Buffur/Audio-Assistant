@@ -8,6 +8,9 @@ from services.reading.application.commands import (
     SendAudioChunkCommand,
     SendAudioChunkNowCommand,
 )
+from services.reading.application.queue_orchestrator import (
+    ReadingAudioQueueOrchestrator,
+)
 from services.reading.infrastructure import session_store
 from texts.messages import BACKGROUND_GENERATION_ERROR
 
@@ -89,11 +92,13 @@ async def test_send_audio_chunk_uses_injected_memory_runner() -> None:
         SendAudioChunkCommand(message=message, user_id=1),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
-        use_redis_audio_queue=lambda: False,
-        redis_audio_queue_position=redis_audio_queue_position,
-        enqueue_redis_audio_job=enqueue_redis_audio_job,
-        memory_audio_queue_position=lambda: 3,
-        enqueue_memory_audio_job=enqueue_memory_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: False,
+            redis_audio_queue_position=redis_audio_queue_position,
+            enqueue_redis_audio_job=enqueue_redis_audio_job,
+            memory_audio_queue_position=lambda: 3,
+            enqueue_memory_audio_job=enqueue_memory_audio_job,
+        ),
         send_audio_chunk_now=send_audio_chunk_now,
     )
     await queued_jobs[0]()
@@ -149,11 +154,13 @@ async def test_send_audio_chunk_reports_redis_failure_without_memory_fallback() 
         SendAudioChunkCommand(message=message, user_id=2),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
-        use_redis_audio_queue=lambda: True,
-        redis_audio_queue_position=redis_audio_queue_position,
-        enqueue_redis_audio_job=enqueue_redis_audio_job,
-        memory_audio_queue_position=memory_audio_queue_position,
-        enqueue_memory_audio_job=enqueue_memory_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: True,
+            redis_audio_queue_position=redis_audio_queue_position,
+            enqueue_redis_audio_job=enqueue_redis_audio_job,
+            memory_audio_queue_position=memory_audio_queue_position,
+            enqueue_memory_audio_job=enqueue_memory_audio_job,
+        ),
         send_audio_chunk_now=send_audio_chunk_now,
     )
 

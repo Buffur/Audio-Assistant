@@ -1,22 +1,21 @@
-import asyncio
 import logging
 import os
-import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
-
-from redis.exceptions import RedisError
 
 from config import (
     EXPORT_AUDIO_CROSSFADE_MS,
     EXPORT_AUDIO_MAX_SIZE_MB,
     EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
 )
-from services.reading import audio_queue
 from services.reading.application.commands import (
     ExportReadingAudioCommand,
     ExportReadingAudioNowCommand,
+)
+from services.reading.application.queue_orchestrator import (
+    ExportAudioEnqueueCommand,
+    ReadingAudioQueueOrchestrator,
 )
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
@@ -39,22 +38,13 @@ from texts.messages import (
     SESSION_NOT_FOUND_OR_FINISHED_TEXT,
     build_export_audio_part_text,
     build_export_audio_progress_text,
-    build_export_audio_queued_text,
     build_export_audio_too_large_text,
 )
 from utils.audio import concat_ogg_files
 
 logger = logging.getLogger(__name__)
 
-AudioGenerationJob = audio_queue.AudioGenerationJob
-SerializedAudioJob = audio_queue.SerializedAudioJob
-
-AsyncIntSupplier = Callable[[], Awaitable[int]]
-IntSupplier = Callable[[], int]
-BoolSupplier = Callable[[], bool]
 CleanupSession = Callable[[int], Awaitable[None]]
-EnqueueRedisAudioJob = Callable[[SerializedAudioJob], Awaitable[None]]
-EnqueueMemoryAudioJob = Callable[[AudioGenerationJob], None]
 ExportAudioNow = Callable[[ExportReadingAudioNowCommand], Awaitable[None]]
 FinishGenerationIfSession = Callable[[int, str | None], Awaitable[None]]
 SendAudioFiles = Callable[..., Awaitable[None]]
@@ -75,25 +65,6 @@ async def safe_edit_message(message: Any | None, text: str) -> None:
 
     with suppress(Exception):
         await message.edit_text(text)
-
-
-def _message_chat_id(message: Any) -> int | None:
-    chat = getattr(message, "chat", None)
-    chat_id = getattr(chat, "id", None)
-
-    if isinstance(chat_id, int):
-        return chat_id
-
-    return None
-
-
-def _status_message_id(message: Any | None) -> int | None:
-    message_id = getattr(message, "message_id", None)
-
-    if isinstance(message_id, int):
-        return message_id
-
-    return None
 
 
 def _is_same_session(session: ReadingSession | None, session_id: str | None) -> bool:
@@ -277,11 +248,7 @@ async def export_reading_audio(
     *,
     cleanup_session: CleanupSession,
     finish_generation_if_session: FinishGenerationIfSession,
-    use_redis_audio_queue: BoolSupplier,
-    redis_audio_queue_position: AsyncIntSupplier,
-    enqueue_redis_audio_job: EnqueueRedisAudioJob,
-    memory_audio_queue_position: IntSupplier,
-    enqueue_memory_audio_job: EnqueueMemoryAudioJob,
+    queue_orchestrator: ReadingAudioQueueOrchestrator,
     export_reading_audio_now: ExportAudioNow,
 ) -> None:
     message = command.message
@@ -304,69 +271,24 @@ async def export_reading_audio(
 
     await update_reading_session(user_id, is_generating=True)
 
-    chat_id = _message_chat_id(message)
-    job_created_at = time.time()
-
-    if use_redis_audio_queue() and chat_id is not None:
-        status_msg = None
-
-        try:
-            queued_position = await redis_audio_queue_position()
-            status_msg = await message.answer(
-                build_export_audio_queued_text(
-                    total_parts=len(chunks),
-                    queue_position=queued_position,
-                )
-            )
-            await enqueue_redis_audio_job(
-                audio_queue.build_export_audio_job(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    session_id=session_id,
-                    status_message_id=_status_message_id(status_msg),
-                    created_at=job_created_at,
-                )
-            )
-            return
-
-        except asyncio.QueueFull:
-            await safe_delete_message(status_msg)
-            await finish_generation_if_session(user_id, session_id)
-            await message.answer(AUDIO_QUEUE_FULL_TEXT)
-            return
-
-        except RedisError:
-            logger.exception(
-                "ReadingExportAudioService: Redis export queue failed user_id=%s",
-                user_id,
-            )
-            await safe_delete_message(status_msg)
-            await finish_generation_if_session(user_id, session_id)
-            await message.answer(EXPORT_AUDIO_GENERATION_ERROR)
-            return
-
-    queued_position = memory_audio_queue_position()
-    status_msg = await message.answer(
-        build_export_audio_queued_text(
+    result = await queue_orchestrator.enqueue_export_audio(
+        ExportAudioEnqueueCommand(
+            message=message,
+            user_id=user_id,
+            session_id=session_id,
             total_parts=len(chunks),
-            queue_position=queued_position,
+            run_now=export_reading_audio_now,
         )
     )
 
-    async def job() -> None:
-        await export_reading_audio_now(
-            ExportReadingAudioNowCommand(
-                message=message,
-                user_id=user_id,
-                expected_session_id=session_id,
-                status_msg=status_msg,
-                job_created_at=job_created_at,
-            )
-        )
+    if result.queued:
+        return
 
-    try:
-        enqueue_memory_audio_job(job)
-    except asyncio.QueueFull:
-        await safe_delete_message(status_msg)
-        await finish_generation_if_session(user_id, session_id)
+    await safe_delete_message(result.status_msg)
+    await finish_generation_if_session(user_id, session_id)
+
+    if result.status == "full":
         await message.answer(AUDIO_QUEUE_FULL_TEXT)
+        return
+
+    await message.answer(EXPORT_AUDIO_GENERATION_ERROR)

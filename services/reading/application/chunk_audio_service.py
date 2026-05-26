@@ -1,20 +1,19 @@
-import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
-from redis.exceptions import RedisError
-
 from keyboards.reading import reading_navigation_keyboard
-from services.reading import audio_queue
 from services.reading.application.commands import (
     AudioFilesResult,
     ResolvePrefetchedAudioCommand,
     SendAudioChunkCommand,
     SendAudioChunkNowCommand,
     StartPrefetchCommand,
+)
+from services.reading.application.queue_orchestrator import (
+    ReadingAudioQueueOrchestrator,
+    SendChunkAudioEnqueueCommand,
 )
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
@@ -30,7 +29,6 @@ from texts.messages import (
     BACKGROUND_GENERATION_ERROR,
     CHUNK_AUDIO_GENERATION_ERROR,
     SESSION_NOT_FOUND_OR_FINISHED_TEXT,
-    build_audio_generation_queued_text,
     build_part_audio_caption,
     build_part_caption,
 )
@@ -40,14 +38,6 @@ logger = logging.getLogger(__name__)
 NO_READING_TEXT = "\u274c \u0423 \u0441\u0435\u0441\u0456\u0457 \u043d\u0435\u043c\u0430\u0454 \u0442\u0435\u043a\u0441\u0442\u0443 \u0434\u043b\u044f \u0447\u0438\u0442\u0430\u043d\u043d\u044f."
 ALL_PARTS_ALREADY_SENT_TEXT = "\u2705 \u0412\u0441\u0456 \u0447\u0430\u0441\u0442\u0438\u043d\u0438 \u0432\u0436\u0435 \u0431\u0443\u043b\u0438 \u043d\u0430\u0434\u0456\u0441\u043b\u0430\u043d\u0456."
 
-AudioGenerationJob = audio_queue.AudioGenerationJob
-SerializedAudioJob = audio_queue.SerializedAudioJob
-
-AsyncIntSupplier = Callable[[], Awaitable[int]]
-IntSupplier = Callable[[], int]
-BoolSupplier = Callable[[], bool]
-EnqueueRedisAudioJob = Callable[[SerializedAudioJob], Awaitable[None]]
-EnqueueMemoryAudioJob = Callable[[AudioGenerationJob], None]
 FinishGenerationIfSession = Callable[[int, str | None], Awaitable[None]]
 CleanupSession = Callable[[int], Awaitable[None]]
 ShouldSkipDeletedUserJob = Callable[[int, float | None], Awaitable[bool]]
@@ -70,25 +60,6 @@ async def safe_delete_message(message: Any | None) -> None:
 
     with suppress(Exception):
         await message.delete()
-
-
-def _message_chat_id(message: Any) -> int | None:
-    chat = getattr(message, "chat", None)
-    chat_id = getattr(chat, "id", None)
-
-    if isinstance(chat_id, int):
-        return chat_id
-
-    return None
-
-
-def _status_message_id(message: Any | None) -> int | None:
-    message_id = getattr(message, "message_id", None)
-
-    if isinstance(message_id, int):
-        return message_id
-
-    return None
 
 
 def _is_same_session(session: ReadingSession | None, session_id: str | None) -> bool:
@@ -273,11 +244,7 @@ async def send_audio_chunk(
     *,
     cleanup_session: CleanupSession,
     finish_generation_if_session: FinishGenerationIfSession,
-    use_redis_audio_queue: BoolSupplier,
-    redis_audio_queue_position: AsyncIntSupplier,
-    enqueue_redis_audio_job: EnqueueRedisAudioJob,
-    memory_audio_queue_position: IntSupplier,
-    enqueue_memory_audio_job: EnqueueMemoryAudioJob,
+    queue_orchestrator: ReadingAudioQueueOrchestrator,
     send_audio_chunk_now: SendAudioChunkNow,
 ) -> None:
     message = command.message
@@ -305,75 +272,25 @@ async def send_audio_chunk(
 
     await update_reading_session(user_id, is_generating=True)
 
-    chat_id = _message_chat_id(message)
-    job_created_at = time.time()
-
-    if use_redis_audio_queue() and chat_id is not None:
-        status_msg = None
-
-        try:
-            queued_position = await redis_audio_queue_position()
-            status_msg = await message.answer(
-                build_audio_generation_queued_text(
-                    current_part=index + 1,
-                    total_parts=len(chunks),
-                    queue_position=queued_position,
-                )
-            )
-            await enqueue_redis_audio_job(
-                audio_queue.build_send_chunk_job(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    session_id=session_id,
-                    status_message_id=_status_message_id(status_msg),
-                    created_at=job_created_at,
-                )
-            )
-            return
-
-        except asyncio.QueueFull:
-            logger.warning(
-                "ReadingChunkAudioService: Redis audio queue is full user_id=%s",
-                user_id,
-            )
-            await safe_delete_message(status_msg)
-            await finish_generation_if_session(user_id, session_id)
-            await message.answer(AUDIO_QUEUE_FULL_TEXT)
-            return
-
-        except RedisError:
-            logger.exception(
-                "ReadingChunkAudioService: Redis audio queue failed user_id=%s",
-                user_id,
-            )
-            await safe_delete_message(status_msg)
-            await finish_generation_if_session(user_id, session_id)
-            await message.answer(BACKGROUND_GENERATION_ERROR)
-            return
-
-    queued_position = memory_audio_queue_position()
-    status_msg = await message.answer(
-        build_audio_generation_queued_text(
+    result = await queue_orchestrator.enqueue_send_chunk_audio(
+        SendChunkAudioEnqueueCommand(
+            message=message,
+            user_id=user_id,
+            session_id=session_id,
             current_part=index + 1,
             total_parts=len(chunks),
-            queue_position=queued_position,
+            run_now=send_audio_chunk_now,
         )
     )
 
-    async def job() -> None:
-        await send_audio_chunk_now(
-            SendAudioChunkNowCommand(
-                message=message,
-                user_id=user_id,
-                expected_session_id=session_id,
-                status_msg=status_msg,
-                job_created_at=job_created_at,
-            )
-        )
+    if result.queued:
+        return
 
-    try:
-        enqueue_memory_audio_job(job)
-    except asyncio.QueueFull:
-        await safe_delete_message(status_msg)
-        await finish_generation_if_session(user_id, session_id)
+    await safe_delete_message(result.status_msg)
+    await finish_generation_if_session(user_id, session_id)
+
+    if result.status == "full":
         await message.answer(AUDIO_QUEUE_FULL_TEXT)
+        return
+
+    await message.answer(BACKGROUND_GENERATION_ERROR)

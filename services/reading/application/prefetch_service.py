@@ -1,19 +1,19 @@
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
-from redis.exceptions import RedisError
-
-from services.reading import audio_queue
 from services.reading.application import privacy_service
 from services.reading.application.commands import (
     AudioFilesResult,
     PrefetchAudioJobCommand,
     ResolvePrefetchedAudioCommand,
     StartPrefetchCommand,
+)
+from services.reading.application.queue_orchestrator import (
+    PrefetchAudioEnqueueCommand,
+    ReadingAudioQueueOrchestrator,
 )
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
@@ -33,8 +33,6 @@ from texts.messages import (
 logger = logging.getLogger(__name__)
 
 REDIS_PREFETCH_WAIT_SECONDS = 3.0
-
-EnqueueRedisAudioJob = Callable[[audio_queue.SerializedAudioJob], Awaitable[None]]
 
 
 async def _safe_delete_message(message: Any | None) -> None:
@@ -285,7 +283,7 @@ async def get_audio_from_prefetch_or_generate(
 async def start_prefetch_next_chunk(
     command: StartPrefetchCommand,
     *,
-    enqueue_redis_audio_job: EnqueueRedisAudioJob,
+    queue_orchestrator: ReadingAudioQueueOrchestrator,
 ) -> None:
     if command.next_index >= len(command.chunks):
         return
@@ -297,7 +295,7 @@ async def start_prefetch_next_chunk(
         voice=next_voice,
     )
 
-    if audio_queue.use_redis_audio_queue():
+    if queue_orchestrator.should_use_redis_backend():
         await update_reading_session(
             command.user_id,
             prefetch_state="queued",
@@ -306,44 +304,42 @@ async def start_prefetch_next_chunk(
             prefetch_error="",
         )
 
-        try:
-            await enqueue_redis_audio_job(
-                audio_queue.build_prefetch_chunk_job(
-                    user_id=command.user_id,
-                    session_id=command.session_id,
-                    chunk_index=command.next_index,
-                    chunk_text=next_chunk,
-                    voice=next_voice,
-                    rate=command.rate,
-                    provider_chain=provider_chain,
-                    created_at=time.time(),
-                )
-            )
-            return
-        except (RedisError, asyncio.QueueFull):
-            logger.exception(
-                "ReadingPrefetchService: failed to enqueue Redis prefetch job user_id=%s",
-                command.user_id,
-            )
-            await update_reading_session(
-                command.user_id,
-                prefetch_state="failed",
-                prefetch_index=command.next_index,
-                prefetch_audio_files=[],
-                prefetch_error="queue_failed",
-            )
-            return
-
-    prefetch_task = asyncio.create_task(
-        generate_voice(
+    async def memory_audio_job() -> list[str]:
+        return await generate_voice(
             text=next_chunk,
             voice=next_voice,
             rate=command.rate,
             provider_chain=provider_chain,
         )
+
+    result = await queue_orchestrator.enqueue_prefetch_audio(
+        PrefetchAudioEnqueueCommand(
+            user_id=command.user_id,
+            session_id=command.session_id,
+            chunk_index=command.next_index,
+            chunk_text=next_chunk,
+            voice=next_voice,
+            rate=command.rate,
+            provider_chain=provider_chain,
+            memory_audio_job=memory_audio_job,
+        )
     )
 
-    await update_reading_session(
-        command.user_id,
-        prefetch_task=prefetch_task,
-    )
+    if result.queued:
+        if result.backend == "memory" and result.memory_task is not None:
+            await update_reading_session(
+                command.user_id,
+                prefetch_task=result.memory_task,
+            )
+
+        return
+
+    if result.backend == "redis":
+        await update_reading_session(
+            command.user_id,
+            prefetch_state="failed",
+            prefetch_index=command.next_index,
+            prefetch_audio_files=[],
+            prefetch_error="queue_failed",
+        )
+        return

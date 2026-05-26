@@ -10,6 +10,9 @@ from services.reading.application.commands import (
     ResolvePrefetchedAudioCommand,
     StartPrefetchCommand,
 )
+from services.reading.application.queue_orchestrator import (
+    ReadingAudioQueueOrchestrator,
+)
 from services.reading.infrastructure import session_store
 
 
@@ -137,7 +140,6 @@ async def test_start_prefetch_next_chunk_enqueues_redis_job(monkeypatch) -> None
     async def fake_enqueue_redis_audio_job(job) -> None:
         captured.update(job)
 
-    monkeypatch.setattr(audio_queue, "READING_AUDIO_QUEUE_BACKEND", "redis")
     monkeypatch.setattr(
         prefetch_service,
         "select_voice_for_text",
@@ -168,7 +170,13 @@ async def test_start_prefetch_next_chunk_enqueues_redis_job(monkeypatch) -> None
             rate="+0%",
             tts_provider="edge",
         ),
-        enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: True,
+            redis_audio_queue_position=lambda: None,
+            enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
+            memory_audio_queue_position=lambda: 0,
+            enqueue_memory_audio_job=lambda job: None,
+        ),
     )
 
     session = await session_store.get_reading_session(9)
@@ -199,8 +207,6 @@ async def test_start_prefetch_next_chunk_marks_failed_on_redis_capacity(
     async def fake_enqueue_redis_audio_job(job) -> None:
         raise asyncio.QueueFull
 
-    monkeypatch.setattr(audio_queue, "READING_AUDIO_QUEUE_BACKEND", "redis")
-
     await session_store.set_reading_session(
         user_id=10,
         session={
@@ -220,7 +226,13 @@ async def test_start_prefetch_next_chunk_marks_failed_on_redis_capacity(
             rate="+0%",
             tts_provider="edge",
         ),
-        enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: True,
+            redis_audio_queue_position=lambda: None,
+            enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
+            memory_audio_queue_position=lambda: 0,
+            enqueue_memory_audio_job=lambda job: None,
+        ),
     )
 
     session = await session_store.get_reading_session(10)

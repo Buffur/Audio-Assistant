@@ -23,6 +23,9 @@ from services.reading.application.commands import (
     SendAudioChunkNowCommand,
     StartPrefetchCommand,
 )
+from services.reading.application.queue_orchestrator import (
+    ReadingAudioQueueOrchestrator,
+)
 from services.reading.application.privacy_service import (
     cleanup_user_private_runtime_data,
     mark_user_data_deletion,
@@ -224,6 +227,16 @@ def _enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
     reading_audio_queue.enqueue_memory_audio_job(job)
 
 
+def _build_audio_queue_orchestrator() -> ReadingAudioQueueOrchestrator:
+    return ReadingAudioQueueOrchestrator(
+        use_redis_audio_queue=_use_redis_audio_queue,
+        redis_audio_queue_position=_redis_audio_queue_position,
+        enqueue_redis_audio_job=_enqueue_redis_audio_job,
+        memory_audio_queue_position=_memory_audio_queue_position,
+        enqueue_memory_audio_job=_enqueue_memory_audio_job,
+    )
+
+
 async def close_reading_audio_queue(
     timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
 ) -> None:
@@ -419,11 +432,7 @@ async def export_reading_audio(
         ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=_finish_generation_if_session,
-        use_redis_audio_queue=_use_redis_audio_queue,
-        redis_audio_queue_position=_redis_audio_queue_position,
-        enqueue_redis_audio_job=_enqueue_redis_audio_job,
-        memory_audio_queue_position=_memory_audio_queue_position,
-        enqueue_memory_audio_job=_enqueue_memory_audio_job,
+        queue_orchestrator=_build_audio_queue_orchestrator(),
         export_reading_audio_now=_export_reading_audio_now_from_command,
     )
 
@@ -564,7 +573,7 @@ async def _start_prefetch_next_chunk(
             rate=rate,
             tts_provider=tts_provider,
         ),
-        enqueue_redis_audio_job=_enqueue_redis_audio_job,
+        queue_orchestrator=_build_audio_queue_orchestrator(),
     )
 
 
@@ -632,10 +641,6 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
         ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=_finish_generation_if_session,
-        use_redis_audio_queue=_use_redis_audio_queue,
-        redis_audio_queue_position=_redis_audio_queue_position,
-        enqueue_redis_audio_job=_enqueue_redis_audio_job,
-        memory_audio_queue_position=_memory_audio_queue_position,
-        enqueue_memory_audio_job=_enqueue_memory_audio_job,
+        queue_orchestrator=_build_audio_queue_orchestrator(),
         send_audio_chunk_now=_send_audio_chunk_now_from_command,
     )

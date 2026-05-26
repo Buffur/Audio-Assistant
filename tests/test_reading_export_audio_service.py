@@ -7,6 +7,9 @@ from services.reading.application.commands import (
     ExportReadingAudioCommand,
     ExportReadingAudioNowCommand,
 )
+from services.reading.application.queue_orchestrator import (
+    ReadingAudioQueueOrchestrator,
+)
 from services.reading.infrastructure import session_store
 from texts.messages import EXPORT_AUDIO_CAPTION_TEXT, EXPORT_AUDIO_GENERATION_ERROR
 
@@ -90,11 +93,13 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
         ExportReadingAudioCommand(message=message, user_id=1),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
-        use_redis_audio_queue=lambda: False,
-        redis_audio_queue_position=redis_audio_queue_position,
-        enqueue_redis_audio_job=enqueue_redis_audio_job,
-        memory_audio_queue_position=lambda: 5,
-        enqueue_memory_audio_job=enqueue_memory_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: False,
+            redis_audio_queue_position=redis_audio_queue_position,
+            enqueue_redis_audio_job=enqueue_redis_audio_job,
+            memory_audio_queue_position=lambda: 5,
+            enqueue_memory_audio_job=enqueue_memory_audio_job,
+        ),
         export_reading_audio_now=export_reading_audio_now,
     )
     await queued_jobs[0]()
@@ -150,11 +155,13 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
         ExportReadingAudioCommand(message=message, user_id=2),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
-        use_redis_audio_queue=lambda: True,
-        redis_audio_queue_position=redis_audio_queue_position,
-        enqueue_redis_audio_job=enqueue_redis_audio_job,
-        memory_audio_queue_position=memory_audio_queue_position,
-        enqueue_memory_audio_job=enqueue_memory_audio_job,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: True,
+            redis_audio_queue_position=redis_audio_queue_position,
+            enqueue_redis_audio_job=enqueue_redis_audio_job,
+            memory_audio_queue_position=memory_audio_queue_position,
+            enqueue_memory_audio_job=enqueue_memory_audio_job,
+        ),
         export_reading_audio_now=export_reading_audio_now,
     )
 
