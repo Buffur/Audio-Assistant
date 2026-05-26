@@ -3,6 +3,10 @@ import pytest_asyncio
 from redis.exceptions import RedisError
 
 from services.reading.application import export_audio_service
+from services.reading.application.commands import (
+    ExportReadingAudioCommand,
+    ExportReadingAudioNowCommand,
+)
 from services.reading.infrastructure import session_store
 from texts.messages import EXPORT_AUDIO_CAPTION_TEXT, EXPORT_AUDIO_GENERATION_ERROR
 
@@ -63,8 +67,8 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
     async def enqueue_redis_audio_job(job) -> None:
         raise AssertionError("memory path must not enqueue Redis job")
 
-    async def export_reading_audio_now(**kwargs) -> None:
-        captured["runner"] = kwargs
+    async def export_reading_audio_now(command: ExportReadingAudioNowCommand) -> None:
+        captured["runner"] = command
 
     queued_jobs = []
 
@@ -83,8 +87,7 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
     message = FakeMessage()
 
     await export_audio_service.export_reading_audio(
-        message=message,
-        user_id=1,
+        ExportReadingAudioCommand(message=message, user_id=1),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
         use_redis_audio_queue=lambda: False,
@@ -97,11 +100,11 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
     await queued_jobs[0]()
 
     assert len(queued_jobs) == 1
-    assert captured["runner"]["message"] is message
-    assert captured["runner"]["user_id"] == 1
-    assert captured["runner"]["expected_session_id"] == "session-1"
-    assert captured["runner"]["status_msg"] in message.status_messages
-    assert isinstance(captured["runner"]["job_created_at"], float)
+    assert captured["runner"].message is message
+    assert captured["runner"].user_id == 1
+    assert captured["runner"].expected_session_id == "session-1"
+    assert captured["runner"].status_msg in message.status_messages
+    assert isinstance(captured["runner"].job_created_at, float)
 
 
 @pytest.mark.asyncio
@@ -129,7 +132,7 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
     def enqueue_memory_audio_job(job) -> None:
         raise AssertionError("Redis failure must not enqueue memory job")
 
-    async def export_reading_audio_now(**kwargs) -> None:
+    async def export_reading_audio_now(command: ExportReadingAudioNowCommand) -> None:
         raise AssertionError("failed Redis enqueue must not run export generation")
 
     await session_store.set_reading_session(
@@ -144,8 +147,7 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
     message = FakeMessage()
 
     await export_audio_service.export_reading_audio(
-        message=message,
-        user_id=2,
+        ExportReadingAudioCommand(message=message, user_id=2),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
         use_redis_audio_queue=lambda: True,
@@ -239,11 +241,13 @@ async def test_export_reading_audio_now_generates_combines_and_sends(
     status_msg = FakeStatusMessage("exporting")
 
     await export_audio_service.export_reading_audio_now(
-        message=message,
-        user_id=3,
-        expected_session_id="session-export",
-        status_msg=status_msg,
-        job_created_at=123.5,
+        ExportReadingAudioNowCommand(
+            message=message,
+            user_id=3,
+            expected_session_id="session-export",
+            status_msg=status_msg,
+            job_created_at=123.5,
+        ),
         finish_generation_if_session=finish_generation_if_session,
         should_skip_deleted_user_job=should_skip_deleted_user_job,
         send_audio_files=send_audio_files,

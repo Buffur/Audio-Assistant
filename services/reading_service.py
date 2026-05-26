@@ -13,9 +13,15 @@ from services.reading.application import (
     prefetch_service,
     privacy_service,
 )
-from services.reading.application.prefetch_service import (
-    get_audio_from_prefetch_or_generate as _get_audio_from_prefetch_or_generate,
-    run_prefetch_audio_job as _run_prefetch_audio_job,
+from services.reading.application.commands import (
+    AudioFilesResult,
+    ExportReadingAudioCommand,
+    ExportReadingAudioNowCommand,
+    PrefetchAudioJobCommand,
+    ResolvePrefetchedAudioCommand,
+    SendAudioChunkCommand,
+    SendAudioChunkNowCommand,
+    StartPrefetchCommand,
 )
 from services.reading.application.privacy_service import (
     cleanup_user_private_runtime_data,
@@ -151,6 +157,12 @@ def _install_redis_worker_compat_hook() -> None:
         _ensure_redis_audio_generation_worker()
 
     reading_audio_queue._ensure_redis_audio_generation_worker = ensure_worker
+
+
+async def _run_prefetch_audio_job(job: SerializedAudioJob) -> None:
+    await prefetch_service.run_prefetch_audio_job(
+        PrefetchAudioJobCommand.from_serialized_job(job)
+    )
 
 
 def _build_audio_job_executor() -> ReadingAudioJobExecutor:
@@ -369,14 +381,28 @@ async def _export_reading_audio_now(
     job_created_at: float | None = None,
 ) -> None:
     await export_audio_service.export_reading_audio_now(
-        message=message,
-        user_id=user_id,
-        expected_session_id=expected_session_id,
-        status_msg=status_msg,
-        job_created_at=job_created_at,
+        ExportReadingAudioNowCommand(
+            message=message,
+            user_id=user_id,
+            expected_session_id=expected_session_id,
+            status_msg=status_msg,
+            job_created_at=job_created_at,
+        ),
         finish_generation_if_session=_finish_generation_if_session,
         should_skip_deleted_user_job=_should_skip_deleted_user_job,
         send_audio_files=_send_audio_files,
+    )
+
+
+async def _export_reading_audio_now_from_command(
+    command: ExportReadingAudioNowCommand,
+) -> None:
+    await _export_reading_audio_now(
+        message=command.message,
+        user_id=command.user_id,
+        expected_session_id=command.expected_session_id,
+        status_msg=command.status_msg,
+        job_created_at=command.job_created_at,
     )
 
 
@@ -386,9 +412,11 @@ async def export_reading_audio(
     expected_session_id: str | None = None,
 ) -> None:
     await export_audio_service.export_reading_audio(
-        message=message,
-        user_id=user_id,
-        expected_session_id=expected_session_id,
+        ExportReadingAudioCommand(
+            message=message,
+            user_id=user_id,
+            expected_session_id=expected_session_id,
+        ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=_finish_generation_if_session,
         use_redis_audio_queue=_use_redis_audio_queue,
@@ -396,7 +424,7 @@ async def export_reading_audio(
         enqueue_redis_audio_job=_enqueue_redis_audio_job,
         memory_audio_queue_position=_memory_audio_queue_position,
         enqueue_memory_audio_job=_enqueue_memory_audio_job,
-        export_reading_audio_now=_export_reading_audio_now,
+        export_reading_audio_now=_export_reading_audio_now_from_command,
     )
 
 
@@ -464,6 +492,58 @@ async def reply_with_voice(
         await message.answer(text)
 
 
+async def _get_audio_from_prefetch_or_generate(
+    *,
+    message: Message,
+    user_id: int,
+    session,
+    chunk_text: str,
+    voice: str,
+    rate: str,
+    provider_chain: list[str],
+    current_part: int,
+    total_parts: int,
+    status_msg: Message | None = None,
+) -> list[str]:
+    result = await prefetch_service.get_audio_from_prefetch_or_generate(
+        ResolvePrefetchedAudioCommand(
+            message=message,
+            user_id=user_id,
+            session=session,
+            chunk_text=chunk_text,
+            voice=voice,
+            rate=rate,
+            provider_chain=provider_chain,
+            current_part=current_part,
+            total_parts=total_parts,
+            status_msg=status_msg,
+        )
+    )
+    return result.audio_files
+
+
+async def _get_audio_from_prefetch_or_generate_from_command(
+    command: ResolvePrefetchedAudioCommand,
+) -> AudioFilesResult:
+    result = await _get_audio_from_prefetch_or_generate(
+        message=command.message,
+        user_id=command.user_id,
+        session=command.session,
+        chunk_text=command.chunk_text,
+        voice=command.voice,
+        rate=command.rate,
+        provider_chain=command.provider_chain,
+        current_part=command.current_part,
+        total_parts=command.total_parts,
+        status_msg=command.status_msg,
+    )
+
+    if isinstance(result, AudioFilesResult):
+        return result
+
+    return AudioFilesResult(audio_files=list(result))
+
+
 async def _start_prefetch_next_chunk(
     *,
     user_id: int,
@@ -475,14 +555,30 @@ async def _start_prefetch_next_chunk(
     tts_provider: str,
 ) -> None:
     await prefetch_service.start_prefetch_next_chunk(
-        user_id=user_id,
-        session_id=session_id,
-        chunks=chunks,
-        next_index=next_index,
-        voice_pref=voice_pref,
-        rate=rate,
-        tts_provider=tts_provider,
+        StartPrefetchCommand(
+            user_id=user_id,
+            session_id=session_id,
+            chunks=chunks,
+            next_index=next_index,
+            voice_pref=voice_pref,
+            rate=rate,
+            tts_provider=tts_provider,
+        ),
         enqueue_redis_audio_job=_enqueue_redis_audio_job,
+    )
+
+
+async def _start_prefetch_next_chunk_from_command(
+    command: StartPrefetchCommand,
+) -> None:
+    await _start_prefetch_next_chunk(
+        user_id=command.user_id,
+        session_id=command.session_id,
+        chunks=command.chunks,
+        next_index=command.next_index,
+        voice_pref=command.voice_pref,
+        rate=command.rate,
+        tts_provider=command.tts_provider,
     )
 
 
@@ -494,16 +590,20 @@ async def _send_audio_chunk_now(
     job_created_at: float | None = None,
 ) -> None:
     await chunk_audio_service.send_audio_chunk_now(
-        message=message,
-        user_id=user_id,
-        expected_session_id=expected_session_id,
-        status_msg=status_msg,
-        job_created_at=job_created_at,
+        SendAudioChunkNowCommand(
+            message=message,
+            user_id=user_id,
+            expected_session_id=expected_session_id,
+            status_msg=status_msg,
+            job_created_at=job_created_at,
+        ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=_finish_generation_if_session,
         should_skip_deleted_user_job=_should_skip_deleted_user_job,
-        get_audio_from_prefetch_or_generate=_get_audio_from_prefetch_or_generate,
-        start_prefetch_next_chunk=_start_prefetch_next_chunk,
+        get_audio_from_prefetch_or_generate=(
+            _get_audio_from_prefetch_or_generate_from_command
+        ),
+        start_prefetch_next_chunk=_start_prefetch_next_chunk_from_command,
         send_audio_files=_send_audio_files,
         get_effective_user_settings=get_effective_user_settings,
         get_effective_user_tts_provider=get_effective_user_tts_provider,
@@ -512,10 +612,24 @@ async def _send_audio_chunk_now(
     )
 
 
+async def _send_audio_chunk_now_from_command(
+    command: SendAudioChunkNowCommand,
+) -> None:
+    await _send_audio_chunk_now(
+        message=command.message,
+        user_id=command.user_id,
+        expected_session_id=command.expected_session_id,
+        status_msg=command.status_msg,
+        job_created_at=command.job_created_at,
+    )
+
+
 async def send_audio_chunk(message: Message, user_id: int) -> None:
     await chunk_audio_service.send_audio_chunk(
-        message=message,
-        user_id=user_id,
+        SendAudioChunkCommand(
+            message=message,
+            user_id=user_id,
+        ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=_finish_generation_if_session,
         use_redis_audio_queue=_use_redis_audio_queue,
@@ -523,5 +637,5 @@ async def send_audio_chunk(message: Message, user_id: int) -> None:
         enqueue_redis_audio_job=_enqueue_redis_audio_job,
         memory_audio_queue_position=_memory_audio_queue_position,
         enqueue_memory_audio_job=_enqueue_memory_audio_job,
-        send_audio_chunk_now=_send_audio_chunk_now,
+        send_audio_chunk_now=_send_audio_chunk_now_from_command,
     )

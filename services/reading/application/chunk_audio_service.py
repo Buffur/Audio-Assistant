@@ -9,6 +9,13 @@ from redis.exceptions import RedisError
 
 from keyboards.reading import reading_navigation_keyboard
 from services.reading import audio_queue
+from services.reading.application.commands import (
+    AudioFilesResult,
+    ResolvePrefetchedAudioCommand,
+    SendAudioChunkCommand,
+    SendAudioChunkNowCommand,
+    StartPrefetchCommand,
+)
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
     get_reading_session_model,
@@ -44,13 +51,17 @@ EnqueueMemoryAudioJob = Callable[[AudioGenerationJob], None]
 FinishGenerationIfSession = Callable[[int, str | None], Awaitable[None]]
 CleanupSession = Callable[[int], Awaitable[None]]
 ShouldSkipDeletedUserJob = Callable[[int, float | None], Awaitable[bool]]
-GetAudioFromPrefetchOrGenerate = Callable[..., Awaitable[list[str]]]
-StartPrefetchNextChunk = Callable[..., Awaitable[None]]
+GetAudioFromPrefetchOrGenerate = Callable[
+    [ResolvePrefetchedAudioCommand],
+    Awaitable[AudioFilesResult],
+]
+StartPrefetchNextChunk = Callable[[StartPrefetchCommand], Awaitable[None]]
 SendAudioFiles = Callable[..., Awaitable[None]]
 GetEffectiveUserSettings = Callable[[int], Awaitable[tuple[str, str]]]
 GetEffectiveUserTtsProvider = Callable[[int], Awaitable[str]]
 IsPremiumUser = Callable[[int], Awaitable[bool]]
 SelectVoiceForText = Callable[[str, str], str]
+SendAudioChunkNow = Callable[[SendAudioChunkNowCommand], Awaitable[None]]
 
 
 async def safe_delete_message(message: Any | None) -> None:
@@ -96,12 +107,8 @@ def _cleanup_audio_files(audio_files: list[str]) -> None:
 
 
 async def send_audio_chunk_now(
+    command: SendAudioChunkNowCommand,
     *,
-    message: Any,
-    user_id: int,
-    expected_session_id: str | None,
-    status_msg: Any | None,
-    job_created_at: float | None = None,
     cleanup_session: CleanupSession,
     finish_generation_if_session: FinishGenerationIfSession,
     should_skip_deleted_user_job: ShouldSkipDeletedUserJob,
@@ -113,6 +120,12 @@ async def send_audio_chunk_now(
     is_premium_user: IsPremiumUser,
     select_voice_for_text: SelectVoiceForText,
 ) -> None:
+    message = command.message
+    user_id = command.user_id
+    expected_session_id = command.expected_session_id
+    status_msg = command.status_msg
+    job_created_at = command.job_created_at
+
     if await should_skip_deleted_user_job(user_id, job_created_at):
         await safe_delete_message(status_msg)
         return
@@ -145,18 +158,21 @@ async def send_audio_chunk_now(
     provider_chain = build_user_tts_provider_chain(tts_provider, voice=voice)
 
     try:
-        audio_files = await get_audio_from_prefetch_or_generate(
-            message=message,
-            user_id=user_id,
-            session=session,
-            chunk_text=chunk_text,
-            voice=voice,
-            rate=rate,
-            provider_chain=provider_chain,
-            current_part=index + 1,
-            total_parts=len(chunks),
-            status_msg=status_msg,
+        audio_result = await get_audio_from_prefetch_or_generate(
+            ResolvePrefetchedAudioCommand(
+                message=message,
+                user_id=user_id,
+                session=session,
+                chunk_text=chunk_text,
+                voice=voice,
+                rate=rate,
+                provider_chain=provider_chain,
+                current_part=index + 1,
+                total_parts=len(chunks),
+                status_msg=status_msg,
+            )
         )
+        audio_files = audio_result.audio_files
 
         if not audio_files:
             logger.warning(
@@ -229,13 +245,15 @@ async def send_audio_chunk_now(
             return
 
         await start_prefetch_next_chunk(
-            user_id=user_id,
-            session_id=current_session_id,
-            chunks=chunks,
-            next_index=new_index,
-            voice_pref=voice_pref,
-            rate=rate,
-            tts_provider=tts_provider,
+            StartPrefetchCommand(
+                user_id=user_id,
+                session_id=current_session_id,
+                chunks=chunks,
+                next_index=new_index,
+                voice_pref=voice_pref,
+                rate=rate,
+                tts_provider=tts_provider,
+            )
         )
 
     except Exception:
@@ -251,9 +269,8 @@ async def send_audio_chunk_now(
 
 
 async def send_audio_chunk(
+    command: SendAudioChunkCommand,
     *,
-    message: Any,
-    user_id: int,
     cleanup_session: CleanupSession,
     finish_generation_if_session: FinishGenerationIfSession,
     use_redis_audio_queue: BoolSupplier,
@@ -261,8 +278,11 @@ async def send_audio_chunk(
     enqueue_redis_audio_job: EnqueueRedisAudioJob,
     memory_audio_queue_position: IntSupplier,
     enqueue_memory_audio_job: EnqueueMemoryAudioJob,
-    send_audio_chunk_now: Callable[..., Awaitable[None]],
+    send_audio_chunk_now: SendAudioChunkNow,
 ) -> None:
+    message = command.message
+    user_id = command.user_id
+
     session = await get_reading_session_model(user_id)
 
     if not session:
@@ -342,11 +362,13 @@ async def send_audio_chunk(
 
     async def job() -> None:
         await send_audio_chunk_now(
-            message=message,
-            user_id=user_id,
-            expected_session_id=session_id,
-            status_msg=status_msg,
-            job_created_at=job_created_at,
+            SendAudioChunkNowCommand(
+                message=message,
+                user_id=user_id,
+                expected_session_id=session_id,
+                status_msg=status_msg,
+                job_created_at=job_created_at,
+            )
         )
 
     try:

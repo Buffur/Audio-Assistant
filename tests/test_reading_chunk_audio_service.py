@@ -3,6 +3,11 @@ import pytest_asyncio
 from redis.exceptions import RedisError
 
 from services.reading.application import chunk_audio_service
+from services.reading.application.commands import (
+    AudioFilesResult,
+    SendAudioChunkCommand,
+    SendAudioChunkNowCommand,
+)
 from services.reading.infrastructure import session_store
 from texts.messages import BACKGROUND_GENERATION_ERROR
 
@@ -61,8 +66,8 @@ async def test_send_audio_chunk_uses_injected_memory_runner() -> None:
     async def enqueue_redis_audio_job(job) -> None:
         raise AssertionError("memory path must not enqueue Redis job")
 
-    async def send_audio_chunk_now(**kwargs) -> None:
-        captured["runner"] = kwargs
+    async def send_audio_chunk_now(command: SendAudioChunkNowCommand) -> None:
+        captured["runner"] = command
 
     queued_jobs = []
 
@@ -81,8 +86,7 @@ async def test_send_audio_chunk_uses_injected_memory_runner() -> None:
     message = FakeMessage()
 
     await chunk_audio_service.send_audio_chunk(
-        message=message,
-        user_id=1,
+        SendAudioChunkCommand(message=message, user_id=1),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
         use_redis_audio_queue=lambda: False,
@@ -95,11 +99,11 @@ async def test_send_audio_chunk_uses_injected_memory_runner() -> None:
     await queued_jobs[0]()
 
     assert len(queued_jobs) == 1
-    assert captured["runner"]["message"] is message
-    assert captured["runner"]["user_id"] == 1
-    assert captured["runner"]["expected_session_id"] == "session-1"
-    assert captured["runner"]["status_msg"] in message.status_messages
-    assert isinstance(captured["runner"]["job_created_at"], float)
+    assert captured["runner"].message is message
+    assert captured["runner"].user_id == 1
+    assert captured["runner"].expected_session_id == "session-1"
+    assert captured["runner"].status_msg in message.status_messages
+    assert isinstance(captured["runner"].job_created_at, float)
 
 
 @pytest.mark.asyncio
@@ -127,7 +131,7 @@ async def test_send_audio_chunk_reports_redis_failure_without_memory_fallback() 
     def enqueue_memory_audio_job(job) -> None:
         raise AssertionError("Redis failure must not enqueue memory job")
 
-    async def send_audio_chunk_now(**kwargs) -> None:
+    async def send_audio_chunk_now(command: SendAudioChunkNowCommand) -> None:
         raise AssertionError("failed Redis enqueue must not run chunk generation")
 
     await session_store.set_reading_session(
@@ -142,8 +146,7 @@ async def test_send_audio_chunk_reports_redis_failure_without_memory_fallback() 
     message = FakeMessage()
 
     await chunk_audio_service.send_audio_chunk(
-        message=message,
-        user_id=2,
+        SendAudioChunkCommand(message=message, user_id=2),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
         use_redis_audio_queue=lambda: True,
@@ -179,12 +182,12 @@ async def test_send_audio_chunk_now_sends_audio_and_starts_prefetch() -> None:
     ) -> bool:
         return False
 
-    async def get_audio_from_prefetch_or_generate(**kwargs):
-        captured["audio_request"] = kwargs
-        return ["chunk.ogg"]
+    async def get_audio_from_prefetch_or_generate(command):
+        captured["audio_request"] = command
+        return AudioFilesResult(audio_files=["chunk.ogg"])
 
-    async def start_prefetch_next_chunk(**kwargs) -> None:
-        captured["prefetch"] = kwargs
+    async def start_prefetch_next_chunk(command) -> None:
+        captured["prefetch"] = command
 
     async def send_audio_files(**kwargs) -> None:
         captured["send"] = kwargs
@@ -211,11 +214,13 @@ async def test_send_audio_chunk_now_sends_audio_and_starts_prefetch() -> None:
     message = FakeMessage()
 
     await chunk_audio_service.send_audio_chunk_now(
-        message=message,
-        user_id=3,
-        expected_session_id="session-flow",
-        status_msg=None,
-        job_created_at=123.5,
+        SendAudioChunkNowCommand(
+            message=message,
+            user_id=3,
+            expected_session_id="session-flow",
+            status_msg=None,
+            job_created_at=123.5,
+        ),
         cleanup_session=cleanup_session,
         finish_generation_if_session=finish_generation_if_session,
         should_skip_deleted_user_job=should_skip_deleted_user_job,
@@ -233,7 +238,7 @@ async def test_send_audio_chunk_now_sends_audio_and_starts_prefetch() -> None:
     assert session is not None
     assert session["index"] == 1
     assert session["is_generating"] is False
-    assert captured["audio_request"]["chunk_text"] == "current"
+    assert captured["audio_request"].chunk_text == "current"
     assert captured["send"]["audio_files"] == ["chunk.ogg"]
-    assert captured["prefetch"]["next_index"] == 1
+    assert captured["prefetch"].next_index == 1
     assert captured["finish"] == (3, "session-flow")

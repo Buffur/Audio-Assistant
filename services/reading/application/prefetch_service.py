@@ -9,6 +9,12 @@ from redis.exceptions import RedisError
 
 from services.reading import audio_queue
 from services.reading.application import privacy_service
+from services.reading.application.commands import (
+    AudioFilesResult,
+    PrefetchAudioJobCommand,
+    ResolvePrefetchedAudioCommand,
+    StartPrefetchCommand,
+)
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
     get_reading_session_model,
@@ -62,32 +68,22 @@ def _cleanup_audio_files(audio_files: list[str]) -> None:
         safe_remove_file(audio_path)
 
 
-async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
-    user_id = int(job["user_id"])
-    job_created_at = float(job.get("created_at") or 0)
-    expected_session_id = str(job["session_id"])
-    chunk_index = int(job["chunk_index"])
-    chunk_text = str(job["chunk_text"])
-    voice = str(job["voice"])
-    rate = str(job["rate"])
-    provider_chain = [
-        str(provider)
-        for provider in job.get("provider_chain", [])
-        if str(provider).strip()
-    ]
-
-    if await privacy_service.should_skip_deleted_user_job(user_id, job_created_at):
+async def run_prefetch_audio_job(command: PrefetchAudioJobCommand) -> None:
+    if await privacy_service.should_skip_deleted_user_job(
+        command.user_id,
+        command.job_created_at,
+    ):
         return
 
-    session = await get_reading_session_model(user_id)
+    session = await get_reading_session_model(command.user_id)
 
-    if not _is_same_session(session, expected_session_id):
+    if not _is_same_session(session, command.session_id):
         return
 
     await update_reading_session(
-        user_id,
+        command.user_id,
         prefetch_state="running",
-        prefetch_index=chunk_index,
+        prefetch_index=command.chunk_index,
         prefetch_error="",
     )
 
@@ -95,26 +91,29 @@ async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
 
     try:
         audio_files = await generate_voice(
-            text=chunk_text,
-            voice=voice,
-            rate=rate,
-            provider_chain=provider_chain,
+            text=command.chunk_text,
+            voice=command.voice,
+            rate=command.rate,
+            provider_chain=command.provider_chain,
         )
 
-        session = await get_reading_session_model(user_id)
+        session = await get_reading_session_model(command.user_id)
 
-        if not _is_same_session(session, expected_session_id):
+        if not _is_same_session(session, command.session_id):
             _cleanup_audio_files(audio_files)
             return
 
-        if await privacy_service.should_skip_deleted_user_job(user_id, job_created_at):
+        if await privacy_service.should_skip_deleted_user_job(
+            command.user_id,
+            command.job_created_at,
+        ):
             _cleanup_audio_files(audio_files)
             return
 
         await update_reading_session(
-            user_id,
+            command.user_id,
             prefetch_state="ready",
-            prefetch_index=chunk_index,
+            prefetch_index=command.chunk_index,
             prefetch_audio_files=audio_files,
             prefetch_error="",
         )
@@ -123,16 +122,19 @@ async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
     except Exception as error:
         logger.exception(
             "ReadingPrefetchService: Redis prefetch job failed user_id=%s chunk_index=%s",
-            user_id,
-            chunk_index,
+            command.user_id,
+            command.chunk_index,
         )
-        if await privacy_service.should_skip_deleted_user_job(user_id, job_created_at):
+        if await privacy_service.should_skip_deleted_user_job(
+            command.user_id,
+            command.job_created_at,
+        ):
             return
 
         await update_reading_session(
-            user_id,
+            command.user_id,
             prefetch_state="failed",
-            prefetch_index=chunk_index,
+            prefetch_index=command.chunk_index,
             prefetch_audio_files=[],
             prefetch_error=str(error),
         )
@@ -142,32 +144,23 @@ async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
 
 
 async def get_audio_from_prefetch_or_generate(
-    *,
-    message: Any,
-    user_id: int,
-    session: ReadingSession,
-    chunk_text: str,
-    voice: str,
-    rate: str,
-    provider_chain: list[str],
-    current_part: int,
-    total_parts: int,
-    status_msg: Any | None = None,
-) -> list[str]:
-    current_index = current_part - 1
+    command: ResolvePrefetchedAudioCommand,
+) -> AudioFilesResult:
+    session = command.session
+    current_index = command.current_part - 1
     prefetch_state = str(session.prefetch_state or "")
     prefetch_index = session.prefetch_index
 
     if prefetch_index == current_index and prefetch_state in {"queued", "running"}:
         await _safe_edit_message(
-            status_msg,
-            build_loading_chunk_text(current_part, total_parts),
+            command.status_msg,
+            build_loading_chunk_text(command.current_part, command.total_parts),
         )
         deadline = time.monotonic() + REDIS_PREFETCH_WAIT_SECONDS
 
         while time.monotonic() < deadline:
             await asyncio.sleep(0.2)
-            refreshed_session = await get_reading_session_model(user_id)
+            refreshed_session = await get_reading_session_model(command.user_id)
 
             if not refreshed_session:
                 break
@@ -187,21 +180,23 @@ async def get_audio_from_prefetch_or_generate(
         and prefetch_audio_files
     ):
         await update_reading_session(
-            user_id,
+            command.user_id,
             prefetch_state="none",
             prefetch_index=-1,
             prefetch_audio_files=[],
             prefetch_error="",
         )
-        await _safe_delete_message(status_msg)
-        return [str(file_path) for file_path in prefetch_audio_files]
+        await _safe_delete_message(command.status_msg)
+        return AudioFilesResult(
+            audio_files=[str(file_path) for file_path in prefetch_audio_files]
+        )
 
     if (
         session.prefetch_index == current_index
         and session.prefetch_state == "failed"
     ):
         await update_reading_session(
-            user_id,
+            command.user_id,
             prefetch_state="none",
             prefetch_index=-1,
             prefetch_audio_files=[],
@@ -212,8 +207,8 @@ async def get_audio_from_prefetch_or_generate(
     if prefetch_task:
         if not prefetch_task.done():
             await _safe_edit_message(
-                status_msg,
-                build_loading_chunk_text(current_part, total_parts),
+                command.status_msg,
+                build_loading_chunk_text(command.current_part, command.total_parts),
             )
 
         try:
@@ -222,34 +217,34 @@ async def get_audio_from_prefetch_or_generate(
         except asyncio.CancelledError:
             logger.info(
                 "ReadingPrefetchService: prefetch_task cancelled, generating manually user_id=%s",
-                user_id,
+                command.user_id,
             )
             audio_files = await generate_voice(
-                chunk_text,
-                voice,
-                rate,
-                provider_chain=provider_chain,
+                command.chunk_text,
+                command.voice,
+                command.rate,
+                provider_chain=command.provider_chain,
             )
 
         except Exception:
             logger.exception(
                 "ReadingPrefetchService: prefetch_task failed, generating manually user_id=%s",
-                user_id,
+                command.user_id,
             )
             audio_files = await generate_voice(
-                chunk_text,
-                voice,
-                rate,
-                provider_chain=provider_chain,
+                command.chunk_text,
+                command.voice,
+                command.rate,
+                provider_chain=command.provider_chain,
             )
 
-        await update_reading_session(user_id, prefetch_task=None)
-        await _safe_delete_message(status_msg)
-        return audio_files
+        await update_reading_session(command.user_id, prefetch_task=None)
+        await _safe_delete_message(command.status_msg)
+        return AudioFilesResult(audio_files=audio_files)
 
     await _safe_edit_message(
-        status_msg,
-        build_generating_chunk_text(current_part, total_parts),
+        command.status_msg,
+        build_generating_chunk_text(command.current_part, command.total_parts),
     )
 
     async def progress_callback(
@@ -262,10 +257,10 @@ async def get_audio_from_prefetch_or_generate(
             return
 
         await _safe_edit_message(
-            status_msg,
+            command.status_msg,
             build_generating_audio_progress_text(
-                current_part=current_part,
-                total_parts=total_parts,
+                current_part=command.current_part,
+                total_parts=command.total_parts,
                 completed_audio_chunks=completed_chunks,
                 total_audio_chunks=chunks_count,
                 provider=provider,
@@ -275,44 +270,38 @@ async def get_audio_from_prefetch_or_generate(
 
     try:
         audio_files = await generate_voice(
-            chunk_text,
-            voice,
-            rate,
-            provider_chain=provider_chain,
+            command.chunk_text,
+            command.voice,
+            command.rate,
+            provider_chain=command.provider_chain,
             progress_callback=progress_callback,
         )
-        return audio_files
+        return AudioFilesResult(audio_files=audio_files)
 
     finally:
-        await _safe_delete_message(status_msg)
+        await _safe_delete_message(command.status_msg)
 
 
 async def start_prefetch_next_chunk(
+    command: StartPrefetchCommand,
     *,
-    user_id: int,
-    session_id: str,
-    chunks: list[str],
-    next_index: int,
-    voice_pref: str,
-    rate: str,
-    tts_provider: str,
     enqueue_redis_audio_job: EnqueueRedisAudioJob,
 ) -> None:
-    if next_index >= len(chunks):
+    if command.next_index >= len(command.chunks):
         return
 
-    next_chunk = chunks[next_index]
-    next_voice = select_voice_for_text(next_chunk, voice_pref)
+    next_chunk = command.chunks[command.next_index]
+    next_voice = select_voice_for_text(next_chunk, command.voice_pref)
     provider_chain = build_user_tts_provider_chain(
-        tts_provider,
+        command.tts_provider,
         voice=next_voice,
     )
 
     if audio_queue.use_redis_audio_queue():
         await update_reading_session(
-            user_id,
+            command.user_id,
             prefetch_state="queued",
-            prefetch_index=next_index,
+            prefetch_index=command.next_index,
             prefetch_audio_files=[],
             prefetch_error="",
         )
@@ -320,12 +309,12 @@ async def start_prefetch_next_chunk(
         try:
             await enqueue_redis_audio_job(
                 audio_queue.build_prefetch_chunk_job(
-                    user_id=user_id,
-                    session_id=session_id,
-                    chunk_index=next_index,
+                    user_id=command.user_id,
+                    session_id=command.session_id,
+                    chunk_index=command.next_index,
                     chunk_text=next_chunk,
                     voice=next_voice,
-                    rate=rate,
+                    rate=command.rate,
                     provider_chain=provider_chain,
                     created_at=time.time(),
                 )
@@ -334,12 +323,12 @@ async def start_prefetch_next_chunk(
         except (RedisError, asyncio.QueueFull):
             logger.exception(
                 "ReadingPrefetchService: failed to enqueue Redis prefetch job user_id=%s",
-                user_id,
+                command.user_id,
             )
             await update_reading_session(
-                user_id,
+                command.user_id,
                 prefetch_state="failed",
-                prefetch_index=next_index,
+                prefetch_index=command.next_index,
                 prefetch_audio_files=[],
                 prefetch_error="queue_failed",
             )
@@ -349,12 +338,12 @@ async def start_prefetch_next_chunk(
         generate_voice(
             text=next_chunk,
             voice=next_voice,
-            rate=rate,
+            rate=command.rate,
             provider_chain=provider_chain,
         )
     )
 
     await update_reading_session(
-        user_id,
+        command.user_id,
         prefetch_task=prefetch_task,
     )

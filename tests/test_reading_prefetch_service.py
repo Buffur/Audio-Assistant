@@ -5,6 +5,11 @@ import pytest_asyncio
 
 from services.reading import audio_queue
 from services.reading.application import prefetch_service
+from services.reading.application.commands import (
+    PrefetchAudioJobCommand,
+    ResolvePrefetchedAudioCommand,
+    StartPrefetchCommand,
+)
 from services.reading.infrastructure import session_store
 
 
@@ -59,15 +64,17 @@ async def test_run_prefetch_audio_job_marks_session_ready(monkeypatch) -> None:
     )
 
     await prefetch_service.run_prefetch_audio_job(
-        audio_queue.build_prefetch_chunk_job(
-            user_id=7,
-            session_id="session-1",
-            chunk_index=1,
-            chunk_text="next chunk",
-            voice="uk-UA-PolinaNeural",
-            rate="+0%",
-            provider_chain=["edge"],
-            created_at=123.5,
+        PrefetchAudioJobCommand.from_serialized_job(
+            audio_queue.build_prefetch_chunk_job(
+                user_id=7,
+                session_id="session-1",
+                chunk_index=1,
+                chunk_text="next chunk",
+                voice="uk-UA-PolinaNeural",
+                rate="+0%",
+                provider_chain=["edge"],
+                created_at=123.5,
+            )
         )
     )
 
@@ -97,22 +104,24 @@ async def test_get_audio_from_prefetch_or_generate_consumes_ready_prefetch() -> 
     session = await session_store.get_reading_session_model(8)
     status_msg = FakeStatusMessage()
 
-    audio_files = await prefetch_service.get_audio_from_prefetch_or_generate(
-        message=None,
-        user_id=8,
-        session=session,
-        chunk_text="current",
-        voice="uk-UA-PolinaNeural",
-        rate="+0%",
-        provider_chain=["edge"],
-        current_part=1,
-        total_parts=1,
-        status_msg=status_msg,
+    result = await prefetch_service.get_audio_from_prefetch_or_generate(
+        ResolvePrefetchedAudioCommand(
+            message=None,
+            user_id=8,
+            session=session,
+            chunk_text="current",
+            voice="uk-UA-PolinaNeural",
+            rate="+0%",
+            provider_chain=["edge"],
+            current_part=1,
+            total_parts=1,
+            status_msg=status_msg,
+        )
     )
 
     refreshed = await session_store.get_reading_session(8)
 
-    assert audio_files == ["ready.ogg"]
+    assert result.audio_files == ["ready.ogg"]
     assert refreshed is not None
     assert refreshed["prefetch_state"] == "none"
     assert refreshed["prefetch_index"] == -1
@@ -150,13 +159,15 @@ async def test_start_prefetch_next_chunk_enqueues_redis_job(monkeypatch) -> None
     )
 
     await prefetch_service.start_prefetch_next_chunk(
-        user_id=9,
-        session_id="session-1",
-        chunks=["current", "next"],
-        next_index=1,
-        voice_pref="voice-pref",
-        rate="+0%",
-        tts_provider="edge",
+        StartPrefetchCommand(
+            user_id=9,
+            session_id="session-1",
+            chunks=["current", "next"],
+            next_index=1,
+            voice_pref="voice-pref",
+            rate="+0%",
+            tts_provider="edge",
+        ),
         enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
     )
 
@@ -200,13 +211,15 @@ async def test_start_prefetch_next_chunk_marks_failed_on_redis_capacity(
     )
 
     await prefetch_service.start_prefetch_next_chunk(
-        user_id=10,
-        session_id="session-1",
-        chunks=["current", "next"],
-        next_index=1,
-        voice_pref="uk-UA-PolinaNeural",
-        rate="+0%",
-        tts_provider="edge",
+        StartPrefetchCommand(
+            user_id=10,
+            session_id="session-1",
+            chunks=["current", "next"],
+            next_index=1,
+            voice_pref="uk-UA-PolinaNeural",
+            rate="+0%",
+            tts_provider="edge",
+        ),
         enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
     )
 

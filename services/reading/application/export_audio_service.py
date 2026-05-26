@@ -14,6 +14,10 @@ from config import (
     EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
 )
 from services.reading import audio_queue
+from services.reading.application.commands import (
+    ExportReadingAudioCommand,
+    ExportReadingAudioNowCommand,
+)
 from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
     get_reading_session_model,
@@ -51,7 +55,7 @@ BoolSupplier = Callable[[], bool]
 CleanupSession = Callable[[int], Awaitable[None]]
 EnqueueRedisAudioJob = Callable[[SerializedAudioJob], Awaitable[None]]
 EnqueueMemoryAudioJob = Callable[[AudioGenerationJob], None]
-ExportAudioNow = Callable[..., Awaitable[None]]
+ExportAudioNow = Callable[[ExportReadingAudioNowCommand], Awaitable[None]]
 FinishGenerationIfSession = Callable[[int, str | None], Awaitable[None]]
 SendAudioFiles = Callable[..., Awaitable[None]]
 ShouldSkipDeletedUserJob = Callable[[int, float | None], Awaitable[bool]]
@@ -116,16 +120,18 @@ def _cleanup_audio_files(audio_files: list[str]) -> None:
 
 
 async def export_reading_audio_now(
+    command: ExportReadingAudioNowCommand,
     *,
-    message: Any,
-    user_id: int,
-    expected_session_id: str | None,
-    status_msg: Any | None,
-    job_created_at: float | None = None,
     finish_generation_if_session: FinishGenerationIfSession,
     should_skip_deleted_user_job: ShouldSkipDeletedUserJob,
     send_audio_files: SendAudioFiles,
 ) -> None:
+    message = command.message
+    user_id = command.user_id
+    expected_session_id = command.expected_session_id
+    status_msg = command.status_msg
+    job_created_at = command.job_created_at
+
     if await should_skip_deleted_user_job(user_id, job_created_at):
         await safe_delete_message(status_msg)
         return
@@ -267,10 +273,8 @@ async def export_reading_audio_now(
 
 
 async def export_reading_audio(
+    command: ExportReadingAudioCommand,
     *,
-    message: Any,
-    user_id: int,
-    expected_session_id: str | None = None,
     cleanup_session: CleanupSession,
     finish_generation_if_session: FinishGenerationIfSession,
     use_redis_audio_queue: BoolSupplier,
@@ -280,6 +284,10 @@ async def export_reading_audio(
     enqueue_memory_audio_job: EnqueueMemoryAudioJob,
     export_reading_audio_now: ExportAudioNow,
 ) -> None:
+    message = command.message
+    user_id = command.user_id
+    expected_session_id = command.expected_session_id
+
     session = await get_reading_session_model(user_id)
 
     if not _is_same_session(session, expected_session_id):
@@ -347,11 +355,13 @@ async def export_reading_audio(
 
     async def job() -> None:
         await export_reading_audio_now(
-            message=message,
-            user_id=user_id,
-            expected_session_id=session_id,
-            status_msg=status_msg,
-            job_created_at=job_created_at,
+            ExportReadingAudioNowCommand(
+                message=message,
+                user_id=user_id,
+                expected_session_id=session_id,
+                status_msg=status_msg,
+                job_created_at=job_created_at,
+            )
         )
 
     try:
