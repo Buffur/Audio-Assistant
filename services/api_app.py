@@ -21,7 +21,7 @@ from config import (
 )
 from database.db import get_admin_stats_snapshot, get_db_connection
 from database.db import get_service_metrics_summary
-from services.reading_audio_queue import get_audio_queue_stats
+from services.reading.audio_queue import get_audio_queue_stats
 from services.redis_client import get_redis_client
 from services.runtime_state import get_runtime_health
 

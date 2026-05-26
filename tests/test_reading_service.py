@@ -688,11 +688,15 @@ async def test_cleanup_user_private_runtime_data_clears_session_queue_and_cache(
         return {"removed_files": 3, "removed_bytes": 4096}
 
     monkeypatch.setattr(
-        reading_service,
+        reading_service.privacy_service,
         "purge_queued_audio_jobs_for_user",
         fake_purge_queued_audio_jobs_for_user,
     )
-    monkeypatch.setattr(reading_service, "clear_audio_cache", fake_clear_audio_cache)
+    monkeypatch.setattr(
+        reading_service.privacy_service,
+        "clear_audio_cache",
+        fake_clear_audio_cache,
+    )
 
     await store.set_reading_session(
         user_id=88,

@@ -68,3 +68,18 @@ _prepare_test_environment()
 @pytest.mark.parametrize("module_name", _iter_project_modules())
 def test_project_module_imports(module_name: str) -> None:
     importlib.import_module(module_name)
+
+
+def test_reading_compatibility_modules_alias_package_modules() -> None:
+    legacy_queue = importlib.import_module("services.reading_audio_queue")
+    package_queue = importlib.import_module("services.reading.audio_queue")
+    legacy_executor = importlib.import_module("services.reading_audio_job_executor")
+    package_executor = importlib.import_module("services.reading.audio_job_executor")
+    legacy_session_store = importlib.import_module("services.reading_session_store")
+    package_session_store = importlib.import_module(
+        "services.reading.infrastructure.session_store"
+    )
+
+    assert legacy_queue is package_queue
+    assert legacy_executor is package_executor
+    assert legacy_session_store is package_session_store
