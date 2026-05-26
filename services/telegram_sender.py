@@ -8,14 +8,19 @@ from typing import Any
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
+    TelegramEntityTooLarge,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEND_DELAY_SECONDS = 0.05
-DEFAULT_RETRY_ATTEMPTS = 2
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
+DEFAULT_RETRY_MAX_DELAY_SECONDS = 3.0
 
 
 async def sleep_after_send(delay_seconds: float = DEFAULT_SEND_DELAY_SECONDS) -> None:
@@ -23,6 +28,18 @@ async def sleep_after_send(delay_seconds: float = DEFAULT_SEND_DELAY_SECONDS) ->
         return
 
     await asyncio.sleep(delay_seconds)
+
+
+def _retry_delay(attempt: int) -> float:
+    delay = DEFAULT_RETRY_BASE_DELAY_SECONDS * (2 ** max(attempt - 1, 0))
+    return min(delay, DEFAULT_RETRY_MAX_DELAY_SECONDS)
+
+
+def _is_retryable_telegram_error(error: TelegramAPIError) -> bool:
+    return isinstance(
+        error,
+        (TelegramNetworkError, TelegramServerError),
+    ) and not isinstance(error, TelegramEntityTooLarge)
 
 
 async def _send_with_retry(
@@ -65,10 +82,25 @@ async def _send_with_retry(
             )
             return None
 
-        except TelegramAPIError:
+        except TelegramAPIError as error:
+            if _is_retryable_telegram_error(error) and attempt < retry_attempts:
+                delay = _retry_delay(attempt)
+                logger.warning(
+                    "TelegramSender: transient Telegram error context=%s attempt=%s/%s retry_in=%s error=%s",
+                    context,
+                    attempt,
+                    retry_attempts,
+                    delay,
+                    error.__class__.__name__,
+                )
+                await asyncio.sleep(delay)
+                continue
+
             logger.exception(
-                "TelegramSender: Telegram API error context=%s",
+                "TelegramSender: Telegram API error context=%s attempt=%s/%s",
                 context,
+                attempt,
+                retry_attempts,
             )
             return None
 

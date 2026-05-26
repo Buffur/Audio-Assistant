@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from aiogram.exceptions import TelegramEntityTooLarge, TelegramNetworkError
 
 from services import telegram_sender
 
@@ -94,3 +95,65 @@ async def test_safe_answer_voice_passes_caption_and_markup() -> None:
         "caption": "caption",
         "reply_markup": markup,
     }]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_retries_transient_network_error(monkeypatch) -> None:
+    calls = 0
+    delays = []
+
+    async def fake_sleep(delay_seconds):
+        delays.append(delay_seconds)
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+
+        if calls == 1:
+            raise TelegramNetworkError(
+                method=SimpleNamespace(),
+                message="temporary network failure",
+            )
+
+        return "ok"
+
+    monkeypatch.setattr(telegram_sender.asyncio, "sleep", fake_sleep)
+
+    result = await telegram_sender._send_with_retry(
+        operation,
+        context="test",
+        retry_attempts=2,
+    )
+
+    assert result == "ok"
+    assert calls == 2
+    assert delays == [telegram_sender.DEFAULT_RETRY_BASE_DELAY_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_does_not_retry_entity_too_large(monkeypatch) -> None:
+    calls = 0
+    delays = []
+
+    async def fake_sleep(delay_seconds):
+        delays.append(delay_seconds)
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        raise TelegramEntityTooLarge(
+            method=SimpleNamespace(),
+            message="payload is too large",
+        )
+
+    monkeypatch.setattr(telegram_sender.asyncio, "sleep", fake_sleep)
+
+    result = await telegram_sender._send_with_retry(
+        operation,
+        context="test",
+        retry_attempts=3,
+    )
+
+    assert result is None
+    assert calls == 1
+    assert delays == []

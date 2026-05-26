@@ -40,6 +40,8 @@ from config import (
 )
 from database.db import get_all_users, init_db
 from services.logging_config import setup_logging
+from services.runtime_state import record_runtime_error
+from services.telemetry_service import record_service_metric
 
 # ============================================================
 # LOGGING
@@ -52,6 +54,19 @@ setup_logging(
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def record_background_task_failure(component: str, error: Exception) -> None:
+    record_runtime_error(component, error)
+
+    with suppress(Exception):
+        await record_service_metric(
+            provider="bot",
+            operation=component,
+            success=False,
+            latency_ms=0,
+            error=error,
+        )
 
 
 # ============================================================
@@ -280,10 +295,11 @@ async def reading_session_cleanup_worker() -> None:
         except asyncio.CancelledError:
             raise
 
-        except Exception:
+        except Exception as error:
             logger.exception(
                 "Помилка під час фонового очищення reading-сесій"
             )
+            await record_background_task_failure("reading_session_cleanup", error)
 
 
 async def maintenance_cleanup_worker() -> None:
@@ -295,8 +311,9 @@ async def maintenance_cleanup_worker() -> None:
             await run_maintenance_cleanup()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             logger.exception("Помилка під час фонового maintenance cleanup")
+            await record_background_task_failure("maintenance_cleanup", error)
 
         await asyncio.sleep(MAINTENANCE_CLEANUP_INTERVAL_SECONDS)
 

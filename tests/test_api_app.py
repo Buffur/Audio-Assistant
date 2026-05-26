@@ -4,9 +4,11 @@ from aiogram import Bot
 from fastapi.testclient import TestClient
 
 from services import api_app
+from services import runtime_state
 
 
 def test_health_and_version_endpoints() -> None:
+    runtime_state.reset_runtime_state()
     client = TestClient(api_app.create_app())
 
     health = client.get("/health")
@@ -14,8 +16,23 @@ def test_health_and_version_endpoints() -> None:
 
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+    assert health.json()["runtime"]["status"] == "ok"
     assert version.status_code == 200
     assert version.json()["service"] == api_app.LOG_SERVICE_NAME
+
+
+def test_health_reports_runtime_degradation() -> None:
+    runtime_state.reset_runtime_state()
+    runtime_state.record_runtime_error("worker", RuntimeError("boom"))
+
+    client = TestClient(api_app.create_app())
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"]["status"] == "degraded"
+    assert response.json()["runtime"]["components"][0]["component"] == "worker"
+
+    runtime_state.reset_runtime_state()
 
 
 def test_ready_returns_200_when_dependencies_are_ok(monkeypatch) -> None:

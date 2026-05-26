@@ -23,6 +23,7 @@ from config import (
 from database.db import get_admin_stats_snapshot, get_db_connection
 from database.db import get_service_metrics_summary
 from services.redis_client import get_redis_client
+from services.runtime_state import get_runtime_health
 
 
 STARTED_AT = time.time()
@@ -146,6 +147,8 @@ async def _readiness_payload() -> tuple[int, dict[str, Any]]:
             "error": error.__class__.__name__,
         }
 
+    checks["runtime"] = get_runtime_health()
+
     payload = {
         "status": "ready" if ready else "not_ready",
         "service": LOG_SERVICE_NAME,
@@ -188,6 +191,7 @@ def create_app(
             "version": APP_VERSION,
             "mode": BOT_RUNTIME_MODE,
             "uptime_seconds": round(_now() - STARTED_AT, 3),
+            "runtime": get_runtime_health(),
         }
 
     @app.get("/version")
