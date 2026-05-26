@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from config import READING_SESSION_BACKEND
-from services.reading.domain.models import InvalidReadingSessionError
+from services.reading.domain.models import InvalidReadingSessionError, ReadingSession
 from services.reading.infrastructure.memory_session_repository import (
     MemoryReadingSessionRepository,
 )
@@ -65,6 +65,15 @@ async def set_reading_session(user_id: int, session: dict[str, Any]) -> None:
 
 async def get_reading_session(user_id: int) -> dict[str, Any] | None:
     return await _repository().get(user_id)
+
+
+async def get_reading_session_model(user_id: int) -> ReadingSession | None:
+    session = await get_reading_session(user_id)
+
+    if session is None:
+        return None
+
+    return ReadingSession.from_mapping(session)
 
 
 async def has_reading_session(user_id: int) -> bool:

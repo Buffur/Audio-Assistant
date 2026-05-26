@@ -94,7 +94,7 @@ async def test_get_audio_from_prefetch_or_generate_consumes_ready_prefetch() -> 
             "prefetch_error": "",
         },
     )
-    session = await session_store.get_reading_session(8)
+    session = await session_store.get_reading_session_model(8)
     status_msg = FakeStatusMessage()
 
     audio_files = await prefetch_service.get_audio_from_prefetch_or_generate(

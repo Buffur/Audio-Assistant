@@ -8,7 +8,7 @@ from services.audio_cache import clear_audio_cache
 from services.reading import audio_queue
 from services.reading.infrastructure.session_store import (
     cleanup_reading_session,
-    get_reading_session,
+    get_reading_session_model,
 )
 from services.redis_client import get_redis_client
 
@@ -112,7 +112,7 @@ async def purge_queued_audio_jobs_for_user(user_id: int) -> int:
 async def cleanup_user_private_runtime_data(user_id: int) -> dict[str, int]:
     await mark_user_data_deletion(user_id)
 
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
     await cleanup_reading_session(user_id)
     queued_audio_jobs = await purge_queued_audio_jobs_for_user(user_id)
     audio_cache_result = clear_audio_cache()

@@ -9,8 +9,9 @@ from redis.exceptions import RedisError
 
 from keyboards.reading import reading_navigation_keyboard
 from services.reading import audio_queue
+from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
-    get_reading_session,
+    get_reading_session_model,
     update_reading_session,
 )
 from services.user_settings_service import build_user_tts_provider_chain
@@ -32,7 +33,6 @@ logger = logging.getLogger(__name__)
 NO_READING_TEXT = "\u274c \u0423 \u0441\u0435\u0441\u0456\u0457 \u043d\u0435\u043c\u0430\u0454 \u0442\u0435\u043a\u0441\u0442\u0443 \u0434\u043b\u044f \u0447\u0438\u0442\u0430\u043d\u043d\u044f."
 ALL_PARTS_ALREADY_SENT_TEXT = "\u2705 \u0412\u0441\u0456 \u0447\u0430\u0441\u0442\u0438\u043d\u0438 \u0432\u0436\u0435 \u0431\u0443\u043b\u0438 \u043d\u0430\u0434\u0456\u0441\u043b\u0430\u043d\u0456."
 
-ReadingSession = dict[str, object]
 AudioGenerationJob = audio_queue.AudioGenerationJob
 SerializedAudioJob = audio_queue.SerializedAudioJob
 
@@ -87,7 +87,7 @@ def _is_same_session(session: ReadingSession | None, session_id: str | None) -> 
     if session_id is None:
         return True
 
-    return session.get("session_id") == session_id
+    return session.session_id == session_id
 
 
 def _cleanup_audio_files(audio_files: list[str]) -> None:
@@ -117,15 +117,15 @@ async def send_audio_chunk_now(
         await safe_delete_message(status_msg)
         return
 
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
     if not _is_same_session(session, expected_session_id):
         await safe_delete_message(status_msg)
         return
 
-    chunks = session.get("chunks") or []
-    index = int(session.get("index", 0))
-    current_session_id = str(session.get("session_id", "legacy"))
+    chunks = session.chunks
+    index = session.index
+    current_session_id = session.session_id
 
     if not chunks:
         await cleanup_session(user_id)
@@ -167,7 +167,7 @@ async def send_audio_chunk_now(
             await message.answer(CHUNK_AUDIO_GENERATION_ERROR)
             return
 
-        current_session = await get_reading_session(user_id)
+        current_session = await get_reading_session_model(user_id)
 
         if not _is_same_session(current_session, expected_session_id):
             _cleanup_audio_files(audio_files)
@@ -180,7 +180,7 @@ async def send_audio_chunk_now(
 
         new_index = index + 1
         has_next = new_index < len(chunks)
-        summary_already_delivered = bool(current_session.get("summary_delivered"))
+        summary_already_delivered = bool(current_session.summary_delivered)
 
         await update_reading_session(
             user_id,
@@ -263,15 +263,15 @@ async def send_audio_chunk(
     enqueue_memory_audio_job: EnqueueMemoryAudioJob,
     send_audio_chunk_now: Callable[..., Awaitable[None]],
 ) -> None:
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
     if not session:
         await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
         return
 
-    chunks = session.get("chunks") or []
-    index = int(session.get("index", 0))
-    session_id = str(session.get("session_id", "legacy"))
+    chunks = session.chunks
+    index = session.index
+    session_id = session.session_id
 
     if not chunks:
         await cleanup_session(user_id)

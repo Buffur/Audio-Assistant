@@ -28,6 +28,7 @@ from services.reading.infrastructure.session_store import (
     cleanup_reading_session,
     finish_generation as _finish_generation,
     get_reading_session,
+    get_reading_session_model,
     has_reading_session as _has_reading_session,
     set_reading_session,
     try_start_generation as _try_start_generation,
@@ -229,23 +230,13 @@ async def safe_delete_message(message: Message | None) -> None:
         await message.delete()
 
 
-def _is_same_session(session: ReadingSession | None, session_id: str | None) -> bool:
-    if not session:
-        return False
-
-    if session_id is None:
-        return True
-
-    return session.get("session_id") == session_id
-
-
 async def _finish_generation_if_session(
     user_id: int,
     session_id: str | None,
 ) -> None:
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
-    if _is_same_session(session, session_id):
+    if session and (session_id is None or session.session_id == session_id):
         await update_reading_session(user_id, is_generating=False)
 
 
@@ -293,9 +284,9 @@ def create_reading_session(
 
 
 async def is_audio_generation_active(user_id: int) -> bool:
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
-    return bool(session and session.get("is_generating"))
+    return bool(session and session.is_generating)
 
 
 async def get_current_reading_session(user_id: int) -> ReadingSession | None:

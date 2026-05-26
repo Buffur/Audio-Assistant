@@ -14,8 +14,9 @@ from config import (
     EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
 )
 from services.reading import audio_queue
+from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
-    get_reading_session,
+    get_reading_session_model,
     update_reading_session,
 )
 from services.tts import generate_voice
@@ -41,7 +42,6 @@ from utils.audio import concat_ogg_files
 
 logger = logging.getLogger(__name__)
 
-ReadingSession = dict[str, object]
 AudioGenerationJob = audio_queue.AudioGenerationJob
 SerializedAudioJob = audio_queue.SerializedAudioJob
 
@@ -99,7 +99,7 @@ def _is_same_session(session: ReadingSession | None, session_id: str | None) -> 
     if session_id is None:
         return True
 
-    return session.get("session_id") == session_id
+    return session.session_id == session_id
 
 
 def _export_max_size_bytes() -> int:
@@ -130,13 +130,13 @@ async def export_reading_audio_now(
         await safe_delete_message(status_msg)
         return
 
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
     if not _is_same_session(session, expected_session_id):
         await safe_delete_message(status_msg)
         return
 
-    chunks = session.get("chunks") or []
+    chunks = session.chunks
 
     if not chunks:
         await safe_delete_message(status_msg)
@@ -156,7 +156,7 @@ async def export_reading_audio_now(
                 await safe_delete_message(status_msg)
                 return
 
-            current_session = await get_reading_session(user_id)
+            current_session = await get_reading_session_model(user_id)
 
             if not _is_same_session(current_session, expected_session_id):
                 await safe_delete_message(status_msg)
@@ -237,7 +237,7 @@ async def export_reading_audio_now(
             await safe_delete_message(status_msg)
             return
 
-        current_session = await get_reading_session(user_id)
+        current_session = await get_reading_session_model(user_id)
 
         if not _is_same_session(current_session, expected_session_id):
             await safe_delete_message(status_msg)
@@ -280,14 +280,14 @@ async def export_reading_audio(
     enqueue_memory_audio_job: EnqueueMemoryAudioJob,
     export_reading_audio_now: ExportAudioNow,
 ) -> None:
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
     if not _is_same_session(session, expected_session_id):
         await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
         return
 
-    chunks = session.get("chunks") or []
-    session_id = str(session.get("session_id", "legacy"))
+    chunks = session.chunks
+    session_id = session.session_id
 
     if not chunks:
         await cleanup_session(user_id)

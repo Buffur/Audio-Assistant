@@ -65,6 +65,29 @@ async def test_set_reading_session_normalizes_through_domain_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_reading_session_model_returns_domain_model() -> None:
+    await store.cleanup_all_reading_sessions()
+
+    await store.set_reading_session(
+        user_id=13,
+        session={
+            "session_id": "typed-session",
+            "chunks": ["one", "two"],
+            "index": "1",
+            "summary_delivered": "true",
+        },
+    )
+
+    session = await store.get_reading_session_model(13)
+
+    assert session is not None
+    assert session.session_id == "typed-session"
+    assert session.chunks == ["one", "two"]
+    assert session.index == 1
+    assert session.summary_delivered is True
+
+
+@pytest.mark.asyncio
 async def test_set_reading_session_rejects_invalid_payload_without_replacing_existing() -> None:
     await store.cleanup_all_reading_sessions()
     await store.set_reading_session(

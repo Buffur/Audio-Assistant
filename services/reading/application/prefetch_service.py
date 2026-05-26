@@ -9,8 +9,9 @@ from redis.exceptions import RedisError
 
 from services.reading import audio_queue
 from services.reading.application import privacy_service
+from services.reading.domain.models import ReadingSession
 from services.reading.infrastructure.session_store import (
-    get_reading_session,
+    get_reading_session_model,
     update_reading_session,
 )
 from services.tts import generate_voice
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 REDIS_PREFETCH_WAIT_SECONDS = 3.0
 
-ReadingSession = dict[str, object]
 EnqueueRedisAudioJob = Callable[[audio_queue.SerializedAudioJob], Awaitable[None]]
 
 
@@ -54,7 +54,7 @@ def _is_same_session(session: ReadingSession | None, session_id: str | None) -> 
     if session_id is None:
         return True
 
-    return session.get("session_id") == session_id
+    return session.session_id == session_id
 
 
 def _cleanup_audio_files(audio_files: list[str]) -> None:
@@ -79,7 +79,7 @@ async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
     if await privacy_service.should_skip_deleted_user_job(user_id, job_created_at):
         return
 
-    session = await get_reading_session(user_id)
+    session = await get_reading_session_model(user_id)
 
     if not _is_same_session(session, expected_session_id):
         return
@@ -101,7 +101,7 @@ async def run_prefetch_audio_job(job: audio_queue.SerializedAudioJob) -> None:
             provider_chain=provider_chain,
         )
 
-        session = await get_reading_session(user_id)
+        session = await get_reading_session_model(user_id)
 
         if not _is_same_session(session, expected_session_id):
             _cleanup_audio_files(audio_files)
@@ -155,8 +155,8 @@ async def get_audio_from_prefetch_or_generate(
     status_msg: Any | None = None,
 ) -> list[str]:
     current_index = current_part - 1
-    prefetch_state = str(session.get("prefetch_state") or "")
-    prefetch_index = session.get("prefetch_index")
+    prefetch_state = str(session.prefetch_state or "")
+    prefetch_index = session.prefetch_index
 
     if prefetch_index == current_index and prefetch_state in {"queued", "running"}:
         await _safe_edit_message(
@@ -167,22 +167,22 @@ async def get_audio_from_prefetch_or_generate(
 
         while time.monotonic() < deadline:
             await asyncio.sleep(0.2)
-            refreshed_session = await get_reading_session(user_id)
+            refreshed_session = await get_reading_session_model(user_id)
 
             if not refreshed_session:
                 break
 
-            prefetch_state = str(refreshed_session.get("prefetch_state") or "")
+            prefetch_state = str(refreshed_session.prefetch_state or "")
             session = refreshed_session
 
             if prefetch_state not in {"queued", "running"}:
                 break
 
-    prefetch_audio_files = session.get("prefetch_audio_files") or []
+    prefetch_audio_files = session.prefetch_audio_files or []
 
     if (
-        session.get("prefetch_index") == current_index
-        and session.get("prefetch_state") == "ready"
+        session.prefetch_index == current_index
+        and session.prefetch_state == "ready"
         and isinstance(prefetch_audio_files, list)
         and prefetch_audio_files
     ):
@@ -197,8 +197,8 @@ async def get_audio_from_prefetch_or_generate(
         return [str(file_path) for file_path in prefetch_audio_files]
 
     if (
-        session.get("prefetch_index") == current_index
-        and session.get("prefetch_state") == "failed"
+        session.prefetch_index == current_index
+        and session.prefetch_state == "failed"
     ):
         await update_reading_session(
             user_id,
@@ -208,7 +208,7 @@ async def get_audio_from_prefetch_or_generate(
             prefetch_error="",
         )
 
-    prefetch_task = session.get("prefetch_task")
+    prefetch_task = session.prefetch_task
     if prefetch_task:
         if not prefetch_task.done():
             await _safe_edit_message(
