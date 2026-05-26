@@ -13,6 +13,7 @@ from services.reading.application.commands import (
 from services.reading.application.queue_orchestrator import (
     ReadingAudioQueueOrchestrator,
 )
+from services.reading.audio_queue import AudioQueueStats
 from services.reading.infrastructure import session_store
 
 
@@ -140,6 +141,15 @@ async def test_start_prefetch_next_chunk_enqueues_redis_job(monkeypatch) -> None
     async def fake_enqueue_redis_audio_job(job) -> None:
         captured.update(job)
 
+    async def get_queue_stats() -> AudioQueueStats:
+        return AudioQueueStats(
+            backend="redis",
+            max_size=20,
+            pending=0,
+            processing=0,
+            worker_running=True,
+        )
+
     monkeypatch.setattr(
         prefetch_service,
         "select_voice_for_text",
@@ -176,6 +186,7 @@ async def test_start_prefetch_next_chunk_enqueues_redis_job(monkeypatch) -> None
             enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
             memory_audio_queue_position=lambda: 0,
             enqueue_memory_audio_job=lambda job: None,
+            get_queue_stats=get_queue_stats,
         ),
     )
 
@@ -207,6 +218,15 @@ async def test_start_prefetch_next_chunk_marks_failed_on_redis_capacity(
     async def fake_enqueue_redis_audio_job(job) -> None:
         raise asyncio.QueueFull
 
+    async def get_queue_stats() -> AudioQueueStats:
+        return AudioQueueStats(
+            backend="redis",
+            max_size=20,
+            pending=0,
+            processing=0,
+            worker_running=True,
+        )
+
     await session_store.set_reading_session(
         user_id=10,
         session={
@@ -232,6 +252,7 @@ async def test_start_prefetch_next_chunk_marks_failed_on_redis_capacity(
             enqueue_redis_audio_job=fake_enqueue_redis_audio_job,
             memory_audio_queue_position=lambda: 0,
             enqueue_memory_audio_job=lambda job: None,
+            get_queue_stats=get_queue_stats,
         ),
     )
 

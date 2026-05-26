@@ -30,6 +30,7 @@ IntSupplier = Callable[[], int]
 BoolSupplier = Callable[[], bool]
 EnqueueRedisAudioJob = Callable[[SerializedAudioJob], Awaitable[None]]
 EnqueueMemoryAudioJob = Callable[[AudioGenerationJob], None]
+GetQueueStats = Callable[[], Awaitable[audio_queue.AudioQueueStats]]
 SendAudioChunkNow = Callable[[SendAudioChunkNowCommand], Awaitable[None]]
 ExportReadingAudioNow = Callable[[ExportReadingAudioNowCommand], Awaitable[None]]
 MemoryPrefetchAudioJob = Callable[[], Awaitable[list[str]]]
@@ -42,6 +43,7 @@ class QueueEnqueueResult:
     status_msg: Any | None = None
     memory_task: asyncio.Task[list[str]] | None = None
     error: BaseException | None = None
+    queue_stats: audio_queue.AudioQueueStats | None = None
 
     @property
     def queued(self) -> bool:
@@ -105,9 +107,67 @@ class ReadingAudioQueueOrchestrator:
     enqueue_redis_audio_job: EnqueueRedisAudioJob
     memory_audio_queue_position: IntSupplier
     enqueue_memory_audio_job: EnqueueMemoryAudioJob
+    get_queue_stats: GetQueueStats
 
     def should_use_redis_backend(self) -> bool:
         return self.use_redis_audio_queue()
+
+    async def _backpressure_result(
+        self,
+        backend: QueueBackend,
+        *,
+        use_case: str,
+        user_id: int,
+    ) -> QueueEnqueueResult | None:
+        try:
+            stats = await self.get_queue_stats()
+
+        except Exception as error:
+            logger.exception(
+                "ReadingQueueOrchestrator: failed to read queue stats "
+                "use_case=%s user_id=%s backend=%s",
+                use_case,
+                user_id,
+                backend,
+            )
+            return QueueEnqueueResult(
+                status="failed",
+                backend=backend,
+                error=error,
+            )
+
+        if stats.degraded or stats.active is None:
+            logger.warning(
+                "ReadingQueueOrchestrator: queue stats degraded "
+                "use_case=%s user_id=%s backend=%s error=%s",
+                use_case,
+                user_id,
+                backend,
+                stats.error,
+            )
+            return QueueEnqueueResult(
+                status="failed",
+                backend=backend,
+                queue_stats=stats,
+            )
+
+        if stats.is_full:
+            logger.warning(
+                "ReadingQueueOrchestrator: queue backpressure rejected enqueue "
+                "use_case=%s user_id=%s backend=%s active=%s max_size=%s",
+                use_case,
+                user_id,
+                backend,
+                stats.active,
+                stats.max_size,
+            )
+            return QueueEnqueueResult(
+                status="full",
+                backend=backend,
+                queue_stats=stats,
+            )
+
+        return None
 
     async def enqueue_send_chunk_audio(
         self,
@@ -117,6 +177,15 @@ class ReadingAudioQueueOrchestrator:
         chat_id = _message_chat_id(command.message)
 
         if self.should_use_redis_backend() and chat_id is not None:
+            backpressure_result = await self._backpressure_result(
+                "redis",
+                use_case="send_chunk",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
+
             status_msg = None
 
             try:
@@ -169,6 +238,16 @@ class ReadingAudioQueueOrchestrator:
                     error=error,
                 )
 
+        if not self.should_use_redis_backend():
+            backpressure_result = await self._backpressure_result(
+                "memory",
+                use_case="send_chunk",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
+
         queued_position = self.memory_audio_queue_position()
         status_msg = await command.message.answer(
             build_audio_generation_queued_text(
@@ -213,6 +292,15 @@ class ReadingAudioQueueOrchestrator:
         chat_id = _message_chat_id(command.message)
 
         if self.should_use_redis_backend() and chat_id is not None:
+            backpressure_result = await self._backpressure_result(
+                "redis",
+                use_case="export_audio",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
+
             status_msg = None
 
             try:
@@ -264,6 +352,16 @@ class ReadingAudioQueueOrchestrator:
                     error=error,
                 )
 
+        if not self.should_use_redis_backend():
+            backpressure_result = await self._backpressure_result(
+                "memory",
+                use_case="export_audio",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
+
         queued_position = self.memory_audio_queue_position()
         status_msg = await command.message.answer(
             build_export_audio_queued_text(
@@ -304,6 +402,15 @@ class ReadingAudioQueueOrchestrator:
         command: PrefetchAudioEnqueueCommand,
     ) -> QueueEnqueueResult:
         if self.should_use_redis_backend():
+            backpressure_result = await self._backpressure_result(
+                "redis",
+                use_case="prefetch_chunk",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
+
             try:
                 await self.enqueue_redis_audio_job(
                     audio_queue.build_prefetch_chunk_job(
@@ -342,6 +449,16 @@ class ReadingAudioQueueOrchestrator:
                     backend="redis",
                     error=error,
                 )
+
+        if not self.should_use_redis_backend():
+            backpressure_result = await self._backpressure_result(
+                "memory",
+                use_case="prefetch_chunk",
+                user_id=command.user_id,
+            )
+
+            if backpressure_result is not None:
+                return backpressure_result
 
         memory_task = asyncio.create_task(command.memory_audio_job())
         return QueueEnqueueResult(

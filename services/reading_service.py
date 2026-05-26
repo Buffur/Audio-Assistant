@@ -227,6 +227,11 @@ def _enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
     reading_audio_queue.enqueue_memory_audio_job(job)
 
 
+async def _get_audio_queue_stats() -> reading_audio_queue.AudioQueueStats:
+    _sync_audio_queue_compat_settings()
+    return await reading_audio_queue.get_audio_queue_stats()
+
+
 def _build_audio_queue_orchestrator() -> ReadingAudioQueueOrchestrator:
     return ReadingAudioQueueOrchestrator(
         use_redis_audio_queue=_use_redis_audio_queue,
@@ -234,6 +239,7 @@ def _build_audio_queue_orchestrator() -> ReadingAudioQueueOrchestrator:
         enqueue_redis_audio_job=_enqueue_redis_audio_job,
         memory_audio_queue_position=_memory_audio_queue_position,
         enqueue_memory_audio_job=_enqueue_memory_audio_job,
+        get_queue_stats=_get_audio_queue_stats,
     )
 
 

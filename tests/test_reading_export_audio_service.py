@@ -10,6 +10,7 @@ from services.reading.application.commands import (
 from services.reading.application.queue_orchestrator import (
     ReadingAudioQueueOrchestrator,
 )
+from services.reading.audio_queue import AudioQueueStats
 from services.reading.infrastructure import session_store
 from texts.messages import EXPORT_AUDIO_CAPTION_TEXT, EXPORT_AUDIO_GENERATION_ERROR
 
@@ -67,6 +68,15 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
     async def redis_audio_queue_position() -> int:
         raise AssertionError("memory path must not ask Redis for queue position")
 
+    async def get_queue_stats() -> AudioQueueStats:
+        return AudioQueueStats(
+            backend="memory",
+            max_size=20,
+            pending=0,
+            processing=0,
+            worker_running=True,
+        )
+
     async def enqueue_redis_audio_job(job) -> None:
         raise AssertionError("memory path must not enqueue Redis job")
 
@@ -99,6 +109,7 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
             enqueue_redis_audio_job=enqueue_redis_audio_job,
             memory_audio_queue_position=lambda: 5,
             enqueue_memory_audio_job=enqueue_memory_audio_job,
+            get_queue_stats=get_queue_stats,
         ),
         export_reading_audio_now=export_reading_audio_now,
     )
@@ -127,6 +138,15 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
 
     async def redis_audio_queue_position() -> int:
         return 1
+
+    async def get_queue_stats() -> AudioQueueStats:
+        return AudioQueueStats(
+            backend="redis",
+            max_size=20,
+            pending=0,
+            processing=0,
+            worker_running=True,
+        )
 
     async def enqueue_redis_audio_job(job) -> None:
         raise RedisError("redis down")
@@ -161,6 +181,7 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
             enqueue_redis_audio_job=enqueue_redis_audio_job,
             memory_audio_queue_position=memory_audio_queue_position,
             enqueue_memory_audio_job=enqueue_memory_audio_job,
+            get_queue_stats=get_queue_stats,
         ),
         export_reading_audio_now=export_reading_audio_now,
     )

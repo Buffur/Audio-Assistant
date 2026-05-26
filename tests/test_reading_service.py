@@ -41,6 +41,16 @@ class FakeMessage:
         return status
 
 
+async def healthy_redis_queue_stats() -> reading_audio_queue.AudioQueueStats:
+    return reading_audio_queue.AudioQueueStats(
+        backend="redis",
+        max_size=20,
+        pending=0,
+        processing=0,
+        worker_running=True,
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_reading_state():
     await reading_service.close_reading_audio_queue(timeout_seconds=0.1)
@@ -200,6 +210,11 @@ async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) ->
         "_enqueue_redis_audio_job",
         fake_enqueue,
     )
+    monkeypatch.setattr(
+        reading_service,
+        "_get_audio_queue_stats",
+        healthy_redis_queue_stats,
+    )
 
     await store.set_reading_session(
         user_id=1,
@@ -251,6 +266,11 @@ async def test_send_audio_chunk_reports_full_redis_queue_without_memory_fallback
     )
     monkeypatch.setattr(
         reading_service,
+        "_get_audio_queue_stats",
+        healthy_redis_queue_stats,
+    )
+    monkeypatch.setattr(
+        reading_service,
         "_ensure_audio_generation_queue",
         fail_memory_queue,
     )
@@ -295,6 +315,11 @@ async def test_send_audio_chunk_reports_redis_queue_failure_without_memory_fallb
         reading_service,
         "_enqueue_redis_audio_job",
         fake_enqueue,
+    )
+    monkeypatch.setattr(
+        reading_service,
+        "_get_audio_queue_stats",
+        healthy_redis_queue_stats,
     )
     monkeypatch.setattr(
         reading_service,
