@@ -29,6 +29,7 @@ class FakeStatusMessage:
 
 class FakeMessage:
     def __init__(self) -> None:
+        self.chat = type("FakeChat", (), {"type": "private"})()
         self.answers: list[str] = []
         self.status_messages: list[FakeStatusMessage] = []
         self.reply_markup_edits = []

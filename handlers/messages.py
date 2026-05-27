@@ -6,6 +6,7 @@ import time
 
 from aiogram import Router, types
 
+from handlers.callback_guards import require_private_message_user
 from services.content_extractor import SUPPORTED_FORMATS_ERROR, extract_text_from_message
 from services.document_history_service import save_document_history_from_message
 from services.reading_service import (
@@ -231,16 +232,17 @@ async def _process_message(message: types.Message, user_id: int) -> None:
 
 @router.message()
 async def handle_message(message: types.Message) -> None:
-    if message.from_user is None:
+    user_id = await require_private_message_user(message)
+
+    if user_id is None:
         logger.warning(
-            "Messages: отримано повідомлення без from_user. "
+            "Messages: ignored message outside private user boundary. "
             "message_id=%s, chat_id=%s",
-            message.message_id,
-            getattr(message.chat, "id", None),
+            getattr(message, "message_id", None),
+            getattr(getattr(message, "chat", None), "id", None),
         )
         return
 
-    user_id = message.from_user.id
     lock = _reserve_user_processing_lock(user_id)
 
     try:

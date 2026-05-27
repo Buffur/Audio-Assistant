@@ -3,7 +3,7 @@
 from aiogram import Router, types
 from aiogram.filters import Command
 
-from config import ADMIN_IDS
+from handlers.callback_guards import require_admin_message
 from services.usage_limits_service import (
     get_effective_plan_info,
     grant_premium,
@@ -16,13 +16,6 @@ from texts.limits import (
 )
 
 router = Router()
-
-
-def _is_admin(message: types.Message) -> bool:
-    return bool(
-        message.from_user
-        and message.from_user.id in ADMIN_IDS
-    )
 
 
 def _parse_user_id(message: types.Message) -> int | None:
@@ -63,7 +56,7 @@ async def grant_premium_handler(message: types.Message) -> None:
     Приклад:
     /premium 123456789 30
     """
-    if not _is_admin(message):
+    if await require_admin_message(message) is None:
         return
 
     user_id = _parse_user_id(message)
@@ -92,7 +85,7 @@ async def grant_premium_forever_handler(message: types.Message) -> None:
     """
     /premium_forever USER_ID
     """
-    if not _is_admin(message):
+    if await require_admin_message(message) is None:
         return
 
     user_id = _parse_user_id(message)
@@ -119,7 +112,7 @@ async def revoke_premium_handler(message: types.Message) -> None:
     """
     /unpremium USER_ID
     """
-    if not _is_admin(message):
+    if await require_admin_message(message) is None:
         return
 
     user_id = _parse_user_id(message)
@@ -138,7 +131,7 @@ async def premium_status_handler(message: types.Message) -> None:
     """
     /premium_status USER_ID
     """
-    if not _is_admin(message):
+    if await require_admin_message(message) is None:
         return
 
     user_id = _parse_user_id(message)

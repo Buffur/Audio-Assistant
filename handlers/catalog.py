@@ -7,11 +7,11 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from handlers.callback_guards import (
-    CALLBACK_OWNER_MISMATCH_TEXT,
-    callback_owner_matches,
-    callback_user_id,
-    message_user_id,
     require_callback_message,
+    require_parsed_callback_owner,
+    require_private_callback,
+    require_private_callback_user,
+    require_private_message_user,
 )
 from keyboards.catalog import (
     CATALOG_CLEAR_CANCEL_CALLBACK,
@@ -61,15 +61,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 CATALOG_PAGE_SIZE = DEFAULT_HISTORY_LIMIT
-
-
-def _callback_owner_matches(
-    callback: types.CallbackQuery,
-    prefix: str,
-) -> bool:
-    owner_id = parse_catalog_callback_user_id(callback.data, prefix)
-
-    return callback_owner_matches(callback, owner_id)
 
 
 def _clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
@@ -178,7 +169,7 @@ async def catalog_handler(message: Message) -> None:
     """
     Показує каталог останніх матеріалів користувача.
     """
-    user_id = message_user_id(message)
+    user_id = await require_private_message_user(message)
 
     if user_id is None:
         return
@@ -191,7 +182,7 @@ async def catalog_page_callback(callback: types.CallbackQuery) -> None:
     """
     Перемикає сторінки каталогу в тому самому повідомленні.
     """
-    user_id = callback_user_id(callback)
+    user_id = await require_private_callback_user(callback)
 
     if user_id is None:
         return
@@ -221,7 +212,7 @@ async def catalog_clear_handler(message: Message) -> None:
     """
     Просить підтвердження перед очищенням каталогу матеріалів користувача.
     """
-    user_id = message_user_id(message)
+    user_id = await require_private_message_user(message)
 
     if user_id is None:
         return
@@ -234,13 +225,15 @@ async def catalog_clear_handler(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(CATALOG_CLEAR_CONFIRM_CALLBACK))
 async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback_user_id(callback)
+    user_id = await require_parsed_callback_owner(
+        callback,
+        lambda data: parse_catalog_callback_user_id(
+            data,
+            CATALOG_CLEAR_CONFIRM_CALLBACK,
+        ),
+    )
 
     if user_id is None:
-        return
-
-    if not _callback_owner_matches(callback, CATALOG_CLEAR_CONFIRM_CALLBACK):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
         return
 
     await clear_document_history(user_id=user_id)
@@ -253,8 +246,13 @@ async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(CATALOG_CLEAR_CANCEL_CALLBACK))
 async def catalog_clear_cancel_callback(callback: types.CallbackQuery) -> None:
-    if not _callback_owner_matches(callback, CATALOG_CLEAR_CANCEL_CALLBACK):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+    if await require_parsed_callback_owner(
+        callback,
+        lambda data: parse_catalog_callback_user_id(
+            data,
+            CATALOG_CLEAR_CANCEL_CALLBACK,
+        ),
+    ) is None:
         return
 
     if callback.message:
@@ -269,6 +267,9 @@ async def catalog_help_handler(message: Message) -> None:
     """
     Показує довідку по каталогу.
     """
+    if await require_private_message_user(message) is None:
+        return
+
     await message.answer(CATALOG_HELP_TEXT)
 
 
@@ -277,6 +278,9 @@ async def unavailable_catalog_document(callback: types.CallbackQuery) -> None:
     """
     Пояснює, чому старий запис не можна відкрити повторно.
     """
+    if not await require_private_callback(callback):
+        return
+
     await callback.answer(
         CATALOG_DOCUMENT_WITHOUT_CHUNKS_TEXT,
         show_alert=True
@@ -288,7 +292,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
     """
     Відкриває документ із каталогу і створює нову reading session.
     """
-    user_id = callback_user_id(callback)
+    user_id = await require_private_callback_user(callback)
 
     if user_id is None:
         return
@@ -358,11 +362,13 @@ async def confirm_catalog_document_delete(callback: types.CallbackQuery) -> None
     """
     Показує підтвердження перед видаленням документа.
     """
-    if not _callback_owner_matches(callback, CATALOG_DELETE_CONFIRM_PREFIX):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
-        return
-
-    user_id = callback_user_id(callback)
+    user_id = await require_parsed_callback_owner(
+        callback,
+        lambda data: parse_catalog_callback_user_id(
+            data,
+            CATALOG_DELETE_CONFIRM_PREFIX,
+        ),
+    )
 
     if user_id is None:
         return
@@ -399,11 +405,13 @@ async def cancel_catalog_document_delete(callback: types.CallbackQuery) -> None:
     """
     Повертає каталог після скасування видалення.
     """
-    if not _callback_owner_matches(callback, CATALOG_DELETE_CANCEL_PREFIX):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
-        return
-
-    user_id = callback_user_id(callback)
+    user_id = await require_parsed_callback_owner(
+        callback,
+        lambda data: parse_catalog_callback_user_id(
+            data,
+            CATALOG_DELETE_CANCEL_PREFIX,
+        ),
+    )
 
     if user_id is None:
         return
@@ -428,11 +436,13 @@ async def delete_catalog_document_handler(callback: types.CallbackQuery) -> None
     """
     Видаляє конкретний документ із каталогу і оновлює список.
     """
-    if not _callback_owner_matches(callback, CATALOG_DELETE_PREFIX):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
-        return
-
-    user_id = callback_user_id(callback)
+    user_id = await require_parsed_callback_owner(
+        callback,
+        lambda data: parse_catalog_callback_user_id(
+            data,
+            CATALOG_DELETE_PREFIX,
+        ),
+    )
 
     if user_id is None:
         return

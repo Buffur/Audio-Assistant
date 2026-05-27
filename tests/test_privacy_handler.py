@@ -8,6 +8,7 @@ from keyboards.privacy import build_delete_my_data_confirm_callback
 
 class FakeMessage:
     def __init__(self) -> None:
+        self.chat = SimpleNamespace(type="private")
         self.edits: list[dict[str, object]] = []
 
     async def edit_text(self, text: str, **kwargs) -> None:

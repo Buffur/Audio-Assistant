@@ -1,5 +1,6 @@
 from aiogram import F, Router, types
 
+from handlers.callback_guards import require_private_callback_user
 from keyboards.reading import (
     READ_EXPORT_AUDIO_ACTION,
     READ_NEXT_ACTION,
@@ -21,6 +22,13 @@ _get_catalog_document_id = callback_flow_service._get_catalog_document_id
 _is_matching_session = callback_flow_service._is_matching_session
 
 
+async def _dispatch_reading_callback(callback: types.CallbackQuery, processor) -> None:
+    if await require_private_callback_user(callback) is None:
+        return
+
+    await processor(callback)
+
+
 async def _get_reading_callback_context(
     callback: types.CallbackQuery,
     *,
@@ -34,19 +42,31 @@ async def _get_reading_callback_context(
 
 @router.callback_query(F.data.startswith(READ_NEXT_ACTION))
 async def process_read_next(callback: types.CallbackQuery) -> None:
-    await callback_flow_service.process_read_next(callback)
+    await _dispatch_reading_callback(
+        callback,
+        callback_flow_service.process_read_next,
+    )
 
 
 @router.callback_query(F.data.startswith(READ_SUMMARY_ACTION))
 async def process_read_summary(callback: types.CallbackQuery) -> None:
-    await callback_flow_service.process_read_summary(callback)
+    await _dispatch_reading_callback(
+        callback,
+        callback_flow_service.process_read_summary,
+    )
 
 
 @router.callback_query(F.data.startswith(READ_EXPORT_AUDIO_ACTION))
 async def process_read_export_audio(callback: types.CallbackQuery) -> None:
-    await callback_flow_service.process_read_export_audio(callback)
+    await _dispatch_reading_callback(
+        callback,
+        callback_flow_service.process_read_export_audio,
+    )
 
 
 @router.callback_query(F.data.startswith(READ_STOP_ACTION))
 async def process_read_stop(callback: types.CallbackQuery) -> None:
-    await callback_flow_service.process_read_stop(callback)
+    await _dispatch_reading_callback(
+        callback,
+        callback_flow_service.process_read_stop,
+    )

@@ -6,6 +6,7 @@ from typing import Any
 from aiogram import Router
 from aiogram.types import ErrorEvent
 
+from handlers.callback_guards import callback_user_id, message_user_id
 from services.runtime_state import record_runtime_error
 from services.telemetry_service import record_service_metric
 from texts.messages import GENERIC_INTERNAL_ERROR_TEXT
@@ -33,10 +34,10 @@ def _build_error_context(event: ErrorEvent) -> dict[str, Any]:
     if callback_query is not None and message is None:
         message = getattr(callback_query, "message", None)
 
-    user = getattr(callback_query, "from_user", None) or getattr(
-        message,
-        "from_user",
-        None,
+    telegram_user_id = (
+        callback_user_id(callback_query)
+        if callback_query is not None
+        else message_user_id(message)
     )
     chat = getattr(message, "chat", None)
     callback_data = getattr(callback_query, "data", None)
@@ -51,7 +52,7 @@ def _build_error_context(event: ErrorEvent) -> dict[str, Any]:
     return {
         "telegram_update_id": getattr(update, "update_id", None),
         "telegram_update_type": update_type,
-        "telegram_user_id": getattr(user, "id", None),
+        "telegram_user_id": telegram_user_id,
         "telegram_chat_id": getattr(chat, "id", None),
         "telegram_message_id": getattr(message, "message_id", None),
         "telegram_callback_prefix": _callback_data_prefix(callback_data),

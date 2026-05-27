@@ -7,12 +7,17 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import ADMIN_IDS
 from database.db import (
     ban_user,
     get_all_users,
     get_all_users_detailed,
     unban_user,
+)
+from handlers.callback_guards import (
+    is_admin_user_id,
+    require_admin_callback,
+    require_admin_message,
+    require_callback_message,
 )
 from services.telegram_sender import safe_answer_voice, safe_send_voice, sleep_after_send
 from services.tts import generate_voice
@@ -31,21 +36,6 @@ BROADCAST_CONFIRM_CALLBACK = "admin_broadcast:confirm"
 BROADCAST_CANCEL_CALLBACK = "admin_broadcast:cancel"
 
 _pending_broadcasts: dict[int, str] = {}
-
-
-def _is_admin_user_id(user_id: int | None) -> bool:
-    """
-    Перевіряє, чи є user_id адміністратором.
-    """
-    return bool(user_id and user_id in ADMIN_IDS)
-
-
-def _is_admin(message: types.Message) -> bool:
-    """
-    Перевіряє, чи є користувач адміністратором.
-    """
-    user_id = message.from_user.id if message.from_user else None
-    return _is_admin_user_id(user_id)
 
 
 def _get_command_text(message: types.Message, command: str) -> str:
@@ -279,10 +269,11 @@ async def _run_broadcast(
 
 @router.message(Command("broadcast"))
 async def broadcast_message(message: types.Message) -> None:
-    if not _is_admin(message):
+    admin_id = await require_admin_message(message)
+
+    if admin_id is None:
         return
 
-    admin_id = message.from_user.id
     text_to_send = _get_command_text(message, "/broadcast")
 
     if not text_to_send:
@@ -311,10 +302,9 @@ async def broadcast_message(message: types.Message) -> None:
 
 @router.callback_query(F.data == BROADCAST_CONFIRM_CALLBACK)
 async def confirm_broadcast_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
+    admin_id = await require_admin_callback(callback)
 
-    if not _is_admin_user_id(admin_id):
-        await callback.answer("У вас немає доступу до розсилки.", show_alert=True)
+    if admin_id is None:
         return
 
     text_to_send = _pending_broadcasts.pop(admin_id, None)
@@ -323,14 +313,18 @@ async def confirm_broadcast_callback(callback: types.CallbackQuery) -> None:
         await callback.answer("Немає активної розсилки для підтвердження.", show_alert=True)
         return
 
-    if not callback.message:
-        await callback.answer("Не вдалося знайти повідомлення розсилки.", show_alert=True)
+    callback_message = await require_callback_message(
+        callback,
+        alert_text="Не вдалося знайти повідомлення розсилки.",
+    )
+
+    if callback_message is None:
         return
 
     await callback.answer("Розсилку підтверджено.")
-    await callback.message.edit_text("✅ Розсилку підтверджено. Запускаю процес...")
+    await callback_message.edit_text("✅ Розсилку підтверджено. Запускаю процес...")
     await _run_broadcast(
-        message=callback.message,
+        message=callback_message,
         admin_id=admin_id,
         text_to_send=text_to_send
     )
@@ -338,10 +332,9 @@ async def confirm_broadcast_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == BROADCAST_CANCEL_CALLBACK)
 async def cancel_broadcast_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
+    admin_id = await require_admin_callback(callback)
 
-    if not _is_admin_user_id(admin_id):
-        await callback.answer("У вас немає доступу до розсилки.", show_alert=True)
+    if admin_id is None:
         return
 
     _pending_broadcasts.pop(admin_id, None)
@@ -354,7 +347,9 @@ async def cancel_broadcast_callback(callback: types.CallbackQuery) -> None:
 
 @router.message(Command("users"))
 async def list_users_handler(message: types.Message) -> None:
-    if not _is_admin(message):
+    admin_id = await require_admin_message(message)
+
+    if admin_id is None:
         return
 
     users = await get_all_users_detailed()
@@ -392,7 +387,9 @@ async def list_users_handler(message: types.Message) -> None:
 
 @router.message(Command("ban"))
 async def ban_user_handler(message: types.Message) -> None:
-    if not _is_admin(message):
+    admin_id = await require_admin_message(message)
+
+    if admin_id is None:
         return
 
     target_id = _parse_target_user_id(message)
@@ -404,7 +401,7 @@ async def ban_user_handler(message: types.Message) -> None:
         )
         return
 
-    if target_id in ADMIN_IDS:
+    if is_admin_user_id(target_id):
         await message.answer("❌ Ви не можете заблокувати адміністратора!")
         return
 
@@ -412,7 +409,7 @@ async def ban_user_handler(message: types.Message) -> None:
 
     logger.info(
         "Admin: user_id=%s заблокував target_id=%s",
-        message.from_user.id,
+        admin_id,
         target_id
     )
 
@@ -424,7 +421,9 @@ async def ban_user_handler(message: types.Message) -> None:
 
 @router.message(Command("unban"))
 async def unban_user_handler(message: types.Message) -> None:
-    if not _is_admin(message):
+    admin_id = await require_admin_message(message)
+
+    if admin_id is None:
         return
 
     target_id = _parse_target_user_id(message)
@@ -440,7 +439,7 @@ async def unban_user_handler(message: types.Message) -> None:
 
     logger.info(
         "Admin: user_id=%s розблокував target_id=%s",
-        message.from_user.id,
+        admin_id,
         target_id
     )
 

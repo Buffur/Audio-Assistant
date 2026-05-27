@@ -6,7 +6,11 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from handlers.callback_guards import callback_user_id, message_user_id
+from handlers.callback_guards import (
+    callback_user_id,
+    require_private_callback_user,
+    require_private_message_user,
+)
 from keyboards.main import SETTINGS_BUTTON_TEXT
 from keyboards.settings import (
     SETTINGS_PREVIEW_CALLBACK,
@@ -145,7 +149,7 @@ async def _send_voice_preview(
 @router.message(Command("settings"))
 @router.message(F.text == SETTINGS_BUTTON_TEXT)
 async def settings_handler(message: Message) -> None:
-    user_id = message_user_id(message)
+    user_id = await require_private_message_user(message)
 
     if user_id is None:
         return
@@ -156,7 +160,7 @@ async def settings_handler(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(VOICE_CALLBACK_PREFIX))
 async def change_voice(callback: CallbackQuery) -> None:
-    user_id = callback_user_id(callback)
+    user_id = await require_private_callback_user(callback)
 
     if user_id is None:
         return
@@ -193,7 +197,7 @@ async def change_voice(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(SPEED_CALLBACK_PREFIX))
 async def change_speed(callback: CallbackQuery) -> None:
-    user_id = callback_user_id(callback)
+    user_id = await require_private_callback_user(callback)
 
     if user_id is None:
         return
@@ -230,7 +234,7 @@ async def change_speed(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == SETTINGS_PREVIEW_CALLBACK)
 async def settings_preview(callback: CallbackQuery) -> None:
-    user_id = callback_user_id(callback)
+    user_id = await require_private_callback_user(callback)
 
     if user_id is None:
         return

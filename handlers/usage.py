@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from handlers.callback_guards import require_private_message_user
 from services.usage_limits_service import get_user_usage_status
 from texts.limits import build_usage_text
 
@@ -12,10 +13,10 @@ router = Router()
 
 @router.message(Command("usage"))
 async def usage_handler(message: Message) -> None:
-    if message.from_user is None:
-        return
+    user_id = await require_private_message_user(message)
 
-    user_id = message.from_user.id
+    if user_id is None:
+        return
 
     status = await get_user_usage_status(user_id)
 

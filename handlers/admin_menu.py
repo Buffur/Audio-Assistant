@@ -7,13 +7,18 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from config import ADMIN_IDS
 from database.db import (
     ban_user,
     get_admin_stats_snapshot,
     get_all_users_detailed,
     get_service_metrics_summary,
     unban_user,
+)
+from handlers.callback_guards import (
+    callback_user_id,
+    is_admin_user_id,
+    require_admin_callback,
+    require_admin_message,
 )
 from keyboards.admin_menu import (
     ADMIN_MENU_BANS_CALLBACK,
@@ -65,7 +70,6 @@ from services.usage_limits_service import (
     reset_user_daily_limits,
 )
 from texts.admin_menu import (
-    ADMIN_ACCESS_DENIED_TEXT,
     ADMIN_BANS_TEXT,
     ADMIN_BROADCAST_TEXT,
     ADMIN_MENU_TEXT,
@@ -82,10 +86,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 ADMIN_USERS_PAGE_SIZE = 10
-
-
-def _is_admin_user(user_id: int | None) -> bool:
-    return bool(user_id and user_id in ADMIN_IDS)
 
 
 def _is_message_not_modified_error(error: Exception) -> bool:
@@ -118,7 +118,7 @@ async def _safe_edit_admin_message(
     if callback.message is None:
         logger.warning(
             "AdminMenu: callback.message відсутній для user_id=%s",
-            callback.from_user.id if callback.from_user else None,
+            callback_user_id(callback),
         )
         return
 
@@ -209,7 +209,7 @@ async def _show_admin_user_detail(
             user_id=target_user_id,
             is_banned=user["is_banned"],
             is_limit_plus=plan_info["is_premium"],
-            can_ban=target_user_id not in ADMIN_IDS,
+            can_ban=not is_admin_user_id(target_user_id),
         )
     )
     return True
@@ -220,7 +220,7 @@ async def _show_admin_user_action_confirmation(
     action: str,
     target_user_id: int,
 ) -> bool:
-    if action == ADMIN_USER_ACTION_BAN and target_user_id in ADMIN_IDS:
+    if action == ADMIN_USER_ACTION_BAN and is_admin_user_id(target_user_id):
         await callback.answer("Адміністратора не можна заблокувати.", show_alert=True)
         return False
 
@@ -253,7 +253,7 @@ async def _perform_admin_user_action(
     target_user_id: int,
 ) -> str | None:
     if action == ADMIN_USER_ACTION_BAN:
-        if target_user_id in ADMIN_IDS:
+        if is_admin_user_id(target_user_id):
             return "Адміністратора не можна заблокувати."
 
         await ban_user(target_user_id)
@@ -332,10 +332,7 @@ async def _build_stats_text() -> str:
 
 @router.message(Command("admin"))
 async def admin_menu_handler(message: Message) -> None:
-    user_id = message.from_user.id if message.from_user else None
-
-    if not _is_admin_user(user_id):
-        await message.answer(ADMIN_ACCESS_DENIED_TEXT)
+    if await require_admin_message(message) is None:
         return
 
     await message.answer(
@@ -347,10 +344,7 @@ async def admin_menu_handler(message: Message) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_MAIN_CALLBACK)
 async def admin_menu_main_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _safe_edit_admin_message(
@@ -364,10 +358,7 @@ async def admin_menu_main_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_STATS_CALLBACK)
 async def admin_stats_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     text = await _build_stats_text()
@@ -385,10 +376,7 @@ async def admin_stats_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_USERS_CALLBACK)
 async def admin_users_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _show_admin_users_page(callback, page=0)
@@ -397,10 +385,7 @@ async def admin_users_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USERS_PAGE_PREFIX))
 async def admin_users_page_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     page = parse_admin_users_page_callback(callback.data)
@@ -415,10 +400,7 @@ async def admin_users_page_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_PREFIX))
 async def admin_user_detail_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -436,10 +418,7 @@ async def admin_user_detail_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_PREFIX))
 async def admin_user_action_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     parsed_value = parse_admin_user_action_callback(
@@ -463,10 +442,7 @@ async def admin_user_action_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_CONFIRM_PREFIX))
 async def admin_user_action_confirm_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     parsed_value = parse_admin_user_action_callback(
@@ -495,10 +471,7 @@ async def admin_user_action_confirm_callback(callback: types.CallbackQuery) -> N
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_ACTION_CANCEL_PREFIX))
 async def admin_user_action_cancel_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     parsed_value = parse_admin_user_action_callback(
@@ -518,10 +491,7 @@ async def admin_user_action_cancel_callback(callback: types.CallbackQuery) -> No
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_BAN_PREFIX))
 async def admin_user_ban_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -543,10 +513,7 @@ async def admin_user_ban_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_UNBAN_PREFIX))
 async def admin_user_unban_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -568,10 +535,7 @@ async def admin_user_unban_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_USER_LIMIT_PLUS_30_PREFIX))
 async def admin_user_limit_plus_30_callback(callback: types.CallbackQuery) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -595,10 +559,7 @@ async def admin_user_limit_plus_30_callback(callback: types.CallbackQuery) -> No
 async def admin_user_limit_plus_forever_callback(
     callback: types.CallbackQuery
 ) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -622,10 +583,7 @@ async def admin_user_limit_plus_forever_callback(
 async def admin_user_limit_plus_revoke_callback(
     callback: types.CallbackQuery
 ) -> None:
-    admin_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(admin_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     target_user_id = _parse_user_id_from_callback(
@@ -647,10 +605,7 @@ async def admin_user_limit_plus_revoke_callback(
 
 @router.callback_query(F.data == ADMIN_MENU_PREMIUM_CALLBACK)
 async def admin_premium_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _safe_edit_admin_message(
@@ -664,10 +619,7 @@ async def admin_premium_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_BROADCAST_CALLBACK)
 async def admin_broadcast_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _safe_edit_admin_message(
@@ -681,10 +633,7 @@ async def admin_broadcast_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_BANS_CALLBACK)
 async def admin_bans_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _safe_edit_admin_message(
@@ -698,10 +647,7 @@ async def admin_bans_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data == ADMIN_MENU_LIMITS_CALLBACK)
 async def admin_limits_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     await _show_admin_limits(callback)
@@ -711,10 +657,7 @@ async def admin_limits_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_LIMIT_EDIT_PREFIX))
 async def admin_limit_edit_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     limit_name = parse_admin_limit_name_callback(
@@ -732,10 +675,7 @@ async def admin_limit_edit_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_LIMIT_ADJUST_PREFIX))
 async def admin_limit_adjust_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     parsed_value = parse_admin_limit_adjust_callback(callback.data)
@@ -758,10 +698,7 @@ async def admin_limit_adjust_callback(callback: types.CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(ADMIN_MENU_LIMIT_RESET_PREFIX))
 async def admin_limit_reset_callback(callback: types.CallbackQuery) -> None:
-    user_id = callback.from_user.id if callback.from_user else None
-
-    if not _is_admin_user(user_id):
-        await callback.answer(ADMIN_ACCESS_DENIED_TEXT, show_alert=True)
+    if await require_admin_callback(callback) is None:
         return
 
     limit_name = parse_admin_limit_name_callback(

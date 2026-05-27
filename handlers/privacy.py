@@ -5,11 +5,8 @@ from aiogram.types import CallbackQuery, Message
 from config import DOCUMENT_HISTORY_RETENTION_DAYS
 from database.db import delete_user_private_data
 from handlers.callback_guards import (
-    CALLBACK_OWNER_MISMATCH_TEXT,
-    USER_MISSING_TEXT,
-    callback_user_id,
-    message_user_id,
-    parsed_callback_owner_matches,
+    require_parsed_callback_owner,
+    require_private_message_user,
 )
 from keyboards.privacy import (
     DELETE_MY_DATA_CANCEL_CALLBACK,
@@ -29,15 +26,11 @@ from texts.privacy import (
 router = Router()
 
 
-def _callback_owner_matches(callback: CallbackQuery) -> bool:
-    return parsed_callback_owner_matches(
-        callback,
-        parse_delete_my_data_callback_user_id,
-    )
-
-
 @router.message(Command("privacy"))
 async def privacy_handler(message: Message) -> None:
+    if await require_private_message_user(message) is None:
+        return
+
     await message.answer(
         build_privacy_text(DOCUMENT_HISTORY_RETENTION_DAYS),
         parse_mode="HTML",
@@ -46,10 +39,9 @@ async def privacy_handler(message: Message) -> None:
 
 @router.message(Command("delete_my_data"))
 async def delete_my_data_handler(message: Message) -> None:
-    user_id = message_user_id(message)
+    user_id = await require_private_message_user(message)
 
     if user_id is None:
-        await message.answer(USER_MISSING_TEXT)
         return
 
     await message.answer(
@@ -61,14 +53,12 @@ async def delete_my_data_handler(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(DELETE_MY_DATA_CONFIRM_CALLBACK))
 async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
-    user_id = callback_user_id(callback)
+    user_id = await require_parsed_callback_owner(
+        callback,
+        parse_delete_my_data_callback_user_id,
+    )
 
     if user_id is None:
-        await callback.answer(USER_MISSING_TEXT, show_alert=True)
-        return
-
-    if not _callback_owner_matches(callback):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
         return
 
     runtime_result = await cleanup_user_private_runtime_data(user_id)
@@ -87,8 +77,10 @@ async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(DELETE_MY_DATA_CANCEL_CALLBACK))
 async def delete_my_data_cancel_callback(callback: CallbackQuery) -> None:
-    if not _callback_owner_matches(callback):
-        await callback.answer(CALLBACK_OWNER_MISMATCH_TEXT, show_alert=True)
+    if await require_parsed_callback_owner(
+        callback,
+        parse_delete_my_data_callback_user_id,
+    ) is None:
         return
 
     if callback.message:

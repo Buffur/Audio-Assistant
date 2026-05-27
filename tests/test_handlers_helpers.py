@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from handlers import admin
 from handlers import admin_menu
+from handlers import callback_guards
 from handlers import catalog
 from handlers import messages
 from handlers import premium_admin
@@ -51,18 +52,18 @@ def test_admin_broadcast_preview_is_limited_and_escaped() -> None:
 
 
 def test_admin_checks_admin_ids(monkeypatch) -> None:
-    monkeypatch.setattr(admin, "ADMIN_IDS", [10])
+    monkeypatch.setattr(callback_guards, "ADMIN_IDS", [10])
 
-    assert admin._is_admin(_message(user_id=10)) is True
-    assert admin._is_admin(_message(user_id=11)) is False
-    assert admin._is_admin(_message()) is False
+    assert callback_guards.is_admin_user_id(10) is True
+    assert callback_guards.is_admin_user_id(11) is False
+    assert callback_guards.is_admin_user_id(None) is False
 
 
 def test_premium_admin_parsers_and_admin_check(monkeypatch) -> None:
-    monkeypatch.setattr(premium_admin, "ADMIN_IDS", [10])
+    monkeypatch.setattr(callback_guards, "ADMIN_IDS", [10])
 
-    assert premium_admin._is_admin(_message(user_id=10)) is True
-    assert premium_admin._is_admin(_message(user_id=11)) is False
+    assert callback_guards.is_admin_user_id(10) is True
+    assert callback_guards.is_admin_user_id(11) is False
 
     assert premium_admin._parse_user_id(_message("/premium 123 30")) == 123
     assert premium_admin._parse_user_id(_message("/premium nope 30")) is None
@@ -71,11 +72,11 @@ def test_premium_admin_parsers_and_admin_check(monkeypatch) -> None:
 
 
 def test_admin_menu_admin_check(monkeypatch) -> None:
-    monkeypatch.setattr(admin_menu, "ADMIN_IDS", [10])
+    monkeypatch.setattr(callback_guards, "ADMIN_IDS", [10])
 
-    assert admin_menu._is_admin_user(10) is True
-    assert admin_menu._is_admin_user(11) is False
-    assert admin_menu._is_admin_user(None) is False
+    assert callback_guards.is_admin_user_id(10) is True
+    assert callback_guards.is_admin_user_id(11) is False
+    assert callback_guards.is_admin_user_id(None) is False
 
 
 def test_admin_menu_detects_message_not_modified_error() -> None:

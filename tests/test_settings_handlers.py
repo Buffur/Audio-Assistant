@@ -12,6 +12,7 @@ from keyboards.settings import (
 
 class FakeSettingsMessage:
     def __init__(self) -> None:
+        self.chat = SimpleNamespace(type="private")
         self.edits = []
 
     async def edit_text(self, text: str, **kwargs) -> None:
