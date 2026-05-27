@@ -478,8 +478,25 @@ def test_messages_supported_processing_detection() -> None:
         SimpleNamespace(text=None, photo=[object()], document=None)
     ) is True
     assert messages._is_supported_processing_message(
-        SimpleNamespace(text=None, photo=None, document=object())
+        SimpleNamespace(
+            text=None,
+            photo=None,
+            document=SimpleNamespace(file_name="book.pdf", mime_type=""),
+        )
     ) is True
+    assert messages._is_supported_processing_message(
+        SimpleNamespace(
+            text=None,
+            photo=None,
+            document=SimpleNamespace(
+                file_name="slides.pptx",
+                mime_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "presentationml.presentation"
+                ),
+            ),
+        )
+    ) is False
     assert messages._is_supported_processing_message(
         SimpleNamespace(text=None, photo=None, document=None, sticker=object())
     ) is False

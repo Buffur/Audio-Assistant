@@ -7,7 +7,11 @@ import time
 from aiogram import Router, types
 
 from handlers.callback_guards import require_private_message_user
-from services.content_extractor import SUPPORTED_FORMATS_ERROR, extract_text_from_message
+from services.content_extractor import (
+    SUPPORTED_FORMATS_ERROR,
+    extract_text_from_message,
+    is_supported_document_metadata,
+)
 from services.document_history_service import (
     get_cached_summary_for_text,
     save_document_history_from_message,
@@ -96,10 +100,12 @@ def _limit_extracted_text(text: str) -> tuple[str, bool]:
 
 
 def _is_supported_processing_message(message: types.Message) -> bool:
+    document = getattr(message, "document", None)
+
     return bool(
         getattr(message, "text", None)
         or getattr(message, "photo", None)
-        or getattr(message, "document", None)
+        or is_supported_document_metadata(document)
     )
 
 

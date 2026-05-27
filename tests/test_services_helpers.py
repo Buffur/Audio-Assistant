@@ -1,6 +1,8 @@
 import asyncio
+from io import BytesIO
 from pathlib import Path
 import time
+import zipfile
 
 import pytest
 
@@ -12,6 +14,16 @@ from services import redis_client
 from services import user_settings_service
 from services import voice_selector
 from services.operation_timeouts import OperationTimeoutError
+
+
+def _build_zip_bytes(files: dict[str, bytes]) -> bytes:
+    buffer = BytesIO()
+
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+
+    return buffer.getvalue()
 
 
 def test_process_txt_supports_utf8_sig(workspace_tmp_path: Path) -> None:
@@ -388,11 +400,41 @@ def test_parser_content_type_helper() -> None:
 
 
 def test_content_extractor_detects_document_kind() -> None:
+    docx_bytes = _build_zip_bytes(
+        {
+            "[Content_Types].xml": b"<Types />",
+            "word/document.xml": b"<w:document />",
+        }
+    )
+    pptx_bytes = _build_zip_bytes(
+        {
+            "[Content_Types].xml": b"<Types />",
+            "ppt/presentation.xml": b"<p:presentation />",
+        }
+    )
+
     assert content_extractor._detect_kind_by_magic_bytes(b"%PDF-1.7") == "pdf"
-    assert content_extractor._detect_kind_by_magic_bytes(b"PK\x03\x04rest") == "docx"
+    assert content_extractor._detect_kind_by_magic_bytes(docx_bytes) == "docx"
+    assert content_extractor._detect_kind_by_magic_bytes(pptx_bytes) is None
+    assert content_extractor._detect_kind_by_magic_bytes(b"PK\x03\x04rest") is None
     assert content_extractor._detect_kind_by_magic_bytes(b"\xff\xd8\xffrest") == "image"
     assert content_extractor._detect_kind_by_magic_bytes(b"\x89PNG\r\n\x1a\nrest") == "image"
 
+    assert content_extractor._detect_document_kind(
+        filename="slides.pptx",
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        file_bytes=pptx_bytes,
+    ) is None
+    assert content_extractor._detect_document_kind(
+        filename="renamed.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        file_bytes=pptx_bytes,
+    ) is None
+    assert content_extractor._detect_document_kind(
+        filename="notes.md",
+        mime_type="text/plain",
+        file_bytes=b"# notes",
+    ) is None
     assert content_extractor._detect_document_kind(
         filename="note.txt",
         mime_type="",
@@ -403,6 +445,31 @@ def test_content_extractor_detects_document_kind() -> None:
         mime_type="",
         file_bytes=b"\x00\x00\x00",
     ) is None
+
+
+def test_content_extractor_supported_document_metadata_is_strict() -> None:
+    assert content_extractor.is_supported_document_metadata(
+        type("Document", (), {"file_name": "book.docx", "mime_type": ""})()
+    ) is True
+    assert content_extractor.is_supported_document_metadata(
+        type(
+            "Document",
+            (),
+            {
+                "file_name": "slides.pptx",
+                "mime_type": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "presentationml.presentation"
+                ),
+            },
+        )()
+    ) is False
+    assert content_extractor.is_supported_document_metadata(
+        type("Document", (), {"file_name": "notes.md", "mime_type": "text/plain"})()
+    ) is False
+    assert content_extractor.is_supported_document_metadata(
+        type("Document", (), {"file_name": "", "mime_type": "text/plain"})()
+    ) is True
 
 
 def test_audio_cache_roundtrip(workspace_tmp_path: Path, monkeypatch) -> None:

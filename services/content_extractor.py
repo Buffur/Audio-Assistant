@@ -3,7 +3,9 @@
 import logging
 import os
 import tempfile
+import zipfile
 from collections.abc import Callable
+from io import BytesIO
 from pathlib import Path
 
 from aiogram import types
@@ -80,6 +82,9 @@ SUPPORTED_MIME_TYPES = {
     "image/jpeg": DOCUMENT_KIND_IMAGE,
     "image/png": DOCUMENT_KIND_IMAGE,
 }
+
+ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+DOCX_MAIN_DOCUMENT_PATH = "word/document.xml"
 
 DOCUMENT_KIND_SUFFIXES = {
     DOCUMENT_KIND_PDF: ".pdf",
@@ -167,6 +172,20 @@ def _get_document_mime_type(message: types.Message) -> str:
     return (message.document.mime_type or "").lower().strip()
 
 
+def is_supported_document_metadata(document: object | None) -> bool:
+    if document is None:
+        return False
+
+    filename = str(getattr(document, "file_name", "") or "").lower().strip()
+    mime_type = str(getattr(document, "mime_type", "") or "").lower().strip()
+    extension = _get_document_extension(filename)
+
+    if extension:
+        return extension in SUPPORTED_EXTENSIONS
+
+    return mime_type in SUPPORTED_MIME_TYPES
+
+
 def _is_document_too_large(message: types.Message) -> bool:
     """
     Перевіряє, чи перевищує документ дозволений розмір за metadata Telegram.
@@ -185,6 +204,21 @@ def _is_downloaded_file_too_large(file_bytes: bytes) -> bool:
     return len(file_bytes) > MAX_DOCUMENT_SIZE_BYTES
 
 
+def _is_zip_container(file_bytes: bytes) -> bool:
+    return file_bytes.startswith(ZIP_SIGNATURES)
+
+
+def _is_docx_container(file_bytes: bytes) -> bool:
+    if not _is_zip_container(file_bytes):
+        return False
+
+    try:
+        with zipfile.ZipFile(BytesIO(file_bytes)) as archive:
+            return DOCX_MAIN_DOCUMENT_PATH in archive.namelist()
+    except zipfile.BadZipFile:
+        return False
+
+
 def _detect_kind_by_magic_bytes(file_bytes: bytes) -> str | None:
     """
     Визначає тип файлу за початковими байтами.
@@ -195,7 +229,7 @@ def _detect_kind_by_magic_bytes(file_bytes: bytes) -> str | None:
     if file_bytes.startswith(b"%PDF-"):
         return DOCUMENT_KIND_PDF
 
-    if file_bytes.startswith(b"PK\x03\x04"):
+    if _is_docx_container(file_bytes):
         return DOCUMENT_KIND_DOCX
 
     if file_bytes.startswith(b"\xff\xd8\xff"):
@@ -254,6 +288,12 @@ def _detect_document_kind(
     if kind_by_magic in SUPPORTED_DOCUMENT_KINDS:
         return kind_by_magic
 
+    if _is_zip_container(file_bytes):
+        return None
+
+    if extension and extension not in SUPPORTED_EXTENSIONS:
+        return None
+
     kind_by_mime = SUPPORTED_MIME_TYPES.get(mime_type)
     if kind_by_mime in SUPPORTED_DOCUMENT_KINDS:
         return kind_by_mime
@@ -266,9 +306,6 @@ def _detect_document_kind(
             return None
 
         return kind_by_extension
-
-    if _looks_like_text_file(file_bytes):
-        return DOCUMENT_KIND_TXT
 
     return None
 
