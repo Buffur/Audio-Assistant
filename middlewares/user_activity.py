@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 USER_ACTIVITY_UPDATE_INTERVAL_SECONDS = 300.0
 USER_ACTIVITY_CACHE_MAX_SIZE = 10_000
 
+_invalidated_user_ids: set[int] = set()
+
 
 @dataclass(frozen=True)
 class UserActivitySnapshot:
@@ -56,6 +58,9 @@ class UserActivityMiddleware(BaseMiddleware):
         full_name: str,
         now: float,
     ) -> bool:
+        if user_id in _invalidated_user_ids:
+            return True
+
         snapshot = self._activity_cache.get(user_id)
 
         if snapshot is None:
@@ -74,6 +79,7 @@ class UserActivityMiddleware(BaseMiddleware):
         full_name: str,
         now: float,
     ) -> None:
+        _invalidated_user_ids.discard(user_id)
         self._activity_cache[user_id] = UserActivitySnapshot(
             username=username,
             full_name=full_name,
@@ -131,3 +137,7 @@ class UserActivityMiddleware(BaseMiddleware):
             )
 
         return await handler(event, data)
+
+
+def invalidate_user_activity_cache(user_id: int) -> None:
+    _invalidated_user_ids.add(user_id)

@@ -17,6 +17,7 @@ from keyboards.privacy import (
     delete_my_data_confirmation_keyboard,
     parse_delete_my_data_callback_user_id,
 )
+from middlewares.user_activity import invalidate_user_activity_cache
 from services.reading_service import cleanup_user_private_runtime_data
 from texts.privacy import (
     DELETE_MY_DATA_CANCELLED_TEXT,
@@ -72,6 +73,7 @@ async def delete_my_data_confirm_callback(callback: CallbackQuery) -> None:
 
     runtime_result = await cleanup_user_private_runtime_data(user_id)
     result = await delete_user_private_data(user_id)
+    invalidate_user_activity_cache(user_id)
     result.update(runtime_result)
 
     if callback.message:

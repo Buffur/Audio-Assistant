@@ -180,3 +180,41 @@ async def test_user_activity_updates_immediately_on_profile_change(monkeypatch) 
         "Test User",
         "Renamed User",
     ]
+
+
+@pytest.mark.asyncio
+async def test_user_activity_invalidation_forces_update_before_interval(
+    monkeypatch,
+) -> None:
+    calls = []
+    now = 100.0
+
+    async def fake_register_or_update_user(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        user_activity_module,
+        "register_or_update_user",
+        fake_register_or_update_user,
+    )
+
+    middleware = user_activity_module.UserActivityMiddleware(
+        update_interval_seconds=60,
+        monotonic=lambda: now,
+    )
+    event = SimpleNamespace(
+        from_user=SimpleNamespace(
+            id=99,
+            username="tester",
+            full_name="Test User",
+        )
+    )
+
+    await middleware(_ok_handler, event, {})
+    await middleware(_ok_handler, event, {})
+
+    user_activity_module.invalidate_user_activity_cache(99)
+
+    await middleware(_ok_handler, event, {})
+
+    assert [call["user_id"] for call in calls] == [99, 99]

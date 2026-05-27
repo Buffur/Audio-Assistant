@@ -364,3 +364,40 @@ async def test_retention_and_delete_user_private_data(workspace_tmp_path, monkey
     assert await db_module.get_user_tts_provider(1) is None
     assert await db_module.is_user_banned(1) is True
     assert (await db_module.get_user_plan_info(1))["plan"] == "premium"
+
+
+@pytest.mark.asyncio
+async def test_user_can_be_reidentified_for_admin_after_privacy_delete_and_new_activity(
+    workspace_tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        db_module,
+        "DB_PATH",
+        str(workspace_tmp_path / "privacy_reidentify.sqlite"),
+    )
+
+    await db_module.init_db()
+    await db_module.register_or_update_user(1, "@tester", "Test User")
+    await db_module.set_user_settings(1, voice="uk-UA-OstapNeural", rate="+25%")
+    await db_module.increment_daily_usage(
+        user_id=1,
+        usage_date="2026-05-15",
+        field_name="text_messages_processed",
+    )
+
+    await db_module.delete_user_private_data(1)
+
+    deleted_user = (await db_module.get_all_users_detailed())[0]
+    assert deleted_user["username"] == "N/A"
+    assert deleted_user["full_name"] == "N/A"
+
+    await db_module.register_or_update_user(1, "@tester", "Test User")
+
+    restored_user = (await db_module.get_all_users_detailed())[0]
+    usage_after_restore = await db_module.get_daily_usage(1, "2026-05-15")
+
+    assert restored_user["username"] == "@tester"
+    assert restored_user["full_name"] == "Test User"
+    assert await db_module.get_user_settings(1) == (None, None)
+    assert usage_after_restore["text_messages_processed"] == 1
