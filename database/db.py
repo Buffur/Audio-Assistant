@@ -94,6 +94,7 @@ async def init_db() -> None:
                 text_length INTEGER NOT NULL DEFAULT 0,
                 chunks_count INTEGER NOT NULL DEFAULT 0,
                 chunks_json TEXT,
+                content_hash TEXT,
                 summary_text TEXT,
                 summary_generated_at TIMESTAMP,
                 summary_voice_file_ids_json TEXT,
@@ -108,6 +109,12 @@ async def init_db() -> None:
             logger.info("DB migration: додаю колонку document_history.chunks_json")
             await db.execute(
                 "ALTER TABLE document_history ADD COLUMN chunks_json TEXT"
+            )
+
+        if not await _column_exists(db, "document_history", "content_hash"):
+            logger.info("DB migration: додаю колонку document_history.content_hash")
+            await db.execute(
+                "ALTER TABLE document_history ADD COLUMN content_hash TEXT"
             )
 
         if not await _column_exists(db, "document_history", "summary_text"):
@@ -163,6 +170,11 @@ async def init_db() -> None:
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_document_history_user_created
             ON document_history (user_id, created_at DESC)
+        """)
+
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_document_history_user_content_hash
+            ON document_history (user_id, content_hash, created_at DESC)
         """)
 
         await db.execute("""
@@ -783,6 +795,7 @@ async def add_document_history(
     text_length: int,
     chunks_count: int,
     chunks_json: str | None = None,
+    content_hash: str | None = None,
 ) -> int:
     async with get_db_connection() as db:
         cursor = await db.execute(
@@ -794,9 +807,10 @@ async def add_document_history(
                 text_preview,
                 text_length,
                 chunks_count,
-                chunks_json
+                chunks_json,
+                content_hash
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -806,6 +820,7 @@ async def add_document_history(
                 text_length,
                 chunks_count,
                 chunks_json,
+                content_hash,
             ),
         )
         await db.commit()
@@ -889,6 +904,7 @@ async def get_user_document_by_id(
                 chunks_count,
                 created_at,
                 chunks_json,
+                content_hash,
                 summary_text,
                 summary_generated_at,
                 summary_voice_file_ids_json,
@@ -914,12 +930,125 @@ async def get_user_document_by_id(
         "chunks_count": row[5],
         "created_at": row[6],
         "chunks_json": row[7],
-        "summary_text": row[8],
-        "summary_generated_at": row[9],
-        "summary_voice_file_ids_json": row[10],
-        "summary_voice_voice": row[11],
-        "summary_voice_rate": row[12],
-        "summary_voice_provider": row[13],
+        "content_hash": row[8],
+        "summary_text": row[9],
+        "summary_generated_at": row[10],
+        "summary_voice_file_ids_json": row[11],
+        "summary_voice_voice": row[12],
+        "summary_voice_rate": row[13],
+        "summary_voice_provider": row[14],
+    }
+
+
+async def get_latest_document_summary_by_content_hash(
+    user_id: int,
+    content_hash: str,
+    exclude_document_id: int | None = None,
+) -> dict[str, Any] | None:
+    content_hash = content_hash.strip()
+
+    if not content_hash:
+        return None
+
+    params: list[Any] = [user_id, content_hash]
+    exclude_clause = ""
+
+    if exclude_document_id is not None:
+        exclude_clause = "AND id != ?"
+        params.append(exclude_document_id)
+
+    async with get_db_connection() as db:
+        async with db.execute(
+            f"""
+            SELECT
+                id,
+                summary_text,
+                summary_generated_at,
+                summary_voice_file_ids_json,
+                summary_voice_voice,
+                summary_voice_rate,
+                summary_voice_provider
+            FROM document_history
+            WHERE
+                user_id = ?
+                AND content_hash = ?
+                AND summary_text IS NOT NULL
+                AND TRIM(summary_text) != ''
+                {exclude_clause}
+            ORDER BY summary_generated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            params,
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "summary_text": row[1],
+        "summary_generated_at": row[2],
+        "summary_voice_file_ids_json": row[3],
+        "summary_voice_voice": row[4],
+        "summary_voice_rate": row[5],
+        "summary_voice_provider": row[6],
+    }
+
+
+async def get_latest_document_summary_by_chunks_json(
+    user_id: int,
+    chunks_json: str,
+    exclude_document_id: int | None = None,
+) -> dict[str, Any] | None:
+    chunks_json = chunks_json.strip()
+
+    if not chunks_json:
+        return None
+
+    params: list[Any] = [user_id, chunks_json]
+    exclude_clause = ""
+
+    if exclude_document_id is not None:
+        exclude_clause = "AND id != ?"
+        params.append(exclude_document_id)
+
+    async with get_db_connection() as db:
+        async with db.execute(
+            f"""
+            SELECT
+                id,
+                summary_text,
+                summary_generated_at,
+                summary_voice_file_ids_json,
+                summary_voice_voice,
+                summary_voice_rate,
+                summary_voice_provider
+            FROM document_history
+            WHERE
+                user_id = ?
+                AND chunks_json = ?
+                AND summary_text IS NOT NULL
+                AND TRIM(summary_text) != ''
+                {exclude_clause}
+            ORDER BY summary_generated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            params,
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "summary_text": row[1],
+        "summary_generated_at": row[2],
+        "summary_voice_file_ids_json": row[3],
+        "summary_voice_voice": row[4],
+        "summary_voice_rate": row[5],
+        "summary_voice_provider": row[6],
     }
 
 

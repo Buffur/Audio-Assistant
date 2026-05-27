@@ -129,6 +129,7 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
         text_length=100,
         chunks_count=2,
         chunks_json='["one", "two"]',
+        content_hash="content-hash",
     )
 
     history = await db_module.get_user_document_history(1)
@@ -140,6 +141,7 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     document = await db_module.get_user_document_by_id(1, document_id)
     assert document is not None
     assert document["chunks_json"] == '["one", "two"]'
+    assert document["content_hash"] == "content-hash"
     assert document["summary_text"] is None
     assert document["summary_voice_file_ids_json"] is None
 
@@ -171,6 +173,55 @@ async def test_document_history_crud(workspace_tmp_path, monkeypatch) -> None:
     history_with_summary = await db_module.get_user_document_history(1)
     assert history_with_summary[0]["has_summary"] is True
     assert history_with_summary[0]["has_summary_voice"] is True
+
+    cached_summary = await db_module.get_latest_document_summary_by_content_hash(
+        user_id=1,
+        content_hash="content-hash",
+    )
+    assert cached_summary is not None
+    assert cached_summary["id"] == document_id
+    assert cached_summary["summary_text"] == "Summary"
+    assert cached_summary["summary_voice_file_ids_json"] == '["voice-file-id"]'
+
+    second_document_id = await db_module.add_document_history(
+        user_id=1,
+        source_type="text",
+        source_name="Repeated text",
+        text_preview="Preview",
+        text_length=100,
+        chunks_count=2,
+        chunks_json='["one", "two"]',
+        content_hash="content-hash",
+    )
+
+    cached_summary_excluding_current = (
+        await db_module.get_latest_document_summary_by_content_hash(
+            user_id=1,
+            content_hash="content-hash",
+            exclude_document_id=second_document_id,
+        )
+    )
+    assert cached_summary_excluding_current is not None
+    assert cached_summary_excluding_current["id"] == document_id
+
+    cached_summary_by_chunks = (
+        await db_module.get_latest_document_summary_by_chunks_json(
+            user_id=1,
+            chunks_json='["one", "two"]',
+            exclude_document_id=second_document_id,
+        )
+    )
+    assert cached_summary_by_chunks is not None
+    assert cached_summary_by_chunks["id"] == document_id
+
+    assert await db_module.get_latest_document_summary_by_content_hash(
+        user_id=2,
+        content_hash="content-hash",
+    ) is None
+    assert await db_module.get_latest_document_summary_by_chunks_json(
+        user_id=2,
+        chunks_json='["one", "two"]',
+    ) is None
 
     await db_module.delete_user_document(1, document_id)
     assert await db_module.get_user_document_by_id(1, document_id) is None

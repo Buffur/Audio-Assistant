@@ -1,5 +1,6 @@
 # Файл: handlers/catalog.py
 
+import asyncio
 import logging
 
 from aiogram import F, Router, types
@@ -39,6 +40,7 @@ from services.document_history_service import (
     get_recent_document_history,
 )
 from services.reading_service import (
+    get_current_reading_session,
     safe_delete_message,
     send_audio_chunk,
     start_reading_session,
@@ -48,10 +50,12 @@ from texts.catalog import (
     CATALOG_CLEAR_CANCELLED_TEXT,
     CATALOG_CLEAR_CONFIRM_TEXT,
     CATALOG_DELETE_CONFIRM_TEXT,
+    CATALOG_DOCUMENT_ALREADY_OPEN_TEXT,
     CATALOG_DOCUMENT_DELETED_TEXT,
     CATALOG_DOCUMENT_NOT_FOUND_TEXT,
     CATALOG_DOCUMENT_WITHOUT_CHUNKS_TEXT,
     CATALOG_HELP_TEXT,
+    CATALOG_OPEN_BUSY_TEXT,
     CATALOG_OPENING_TEXT,
     build_catalog_document_opened_text,
     build_catalog_text,
@@ -61,6 +65,56 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 CATALOG_PAGE_SIZE = DEFAULT_HISTORY_LIMIT
+_catalog_open_locks: dict[int, asyncio.Lock] = {}
+_catalog_open_lock_usage: dict[int, int] = {}
+
+
+def _reserve_catalog_open_lock(user_id: int) -> asyncio.Lock:
+    lock = _catalog_open_locks.get(user_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        _catalog_open_locks[user_id] = lock
+
+    _catalog_open_lock_usage[user_id] = (
+        _catalog_open_lock_usage.get(user_id, 0) + 1
+    )
+
+    return lock
+
+
+def _release_catalog_open_lock(user_id: int) -> None:
+    usage_count = _catalog_open_lock_usage.get(user_id, 0) - 1
+
+    if usage_count > 0:
+        _catalog_open_lock_usage[user_id] = usage_count
+        return
+
+    _catalog_open_lock_usage.pop(user_id, None)
+
+    lock = _catalog_open_locks.get(user_id)
+
+    if lock is not None and not lock.locked():
+        _catalog_open_locks.pop(user_id, None)
+
+
+def _session_catalog_document_id(session: dict | None) -> int | None:
+    if not session:
+        return None
+
+    document_id = session.get("catalog_document_id")
+
+    if document_id is None:
+        return None
+
+    try:
+        return int(document_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_session_generating(session: dict | None) -> bool:
+    return bool(session and session.get("is_generating"))
 
 
 def _clamp_page(page: int, total_items: int, page_size: int) -> tuple[int, int]:
@@ -309,6 +363,41 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
 
     if document_id is None:
         await callback.answer(CATALOG_DOCUMENT_NOT_FOUND_TEXT, show_alert=True)
+        return
+
+    lock = _reserve_catalog_open_lock(user_id)
+
+    try:
+        async with lock:
+            await _open_catalog_document_locked(
+                callback=callback,
+                message=message,
+                user_id=user_id,
+                document_id=document_id,
+            )
+    finally:
+        _release_catalog_open_lock(user_id)
+
+
+async def _open_catalog_document_locked(
+    *,
+    callback: types.CallbackQuery,
+    message: Message,
+    user_id: int,
+    document_id: int,
+) -> None:
+    current_session = await get_current_reading_session(user_id)
+    current_catalog_document_id = _session_catalog_document_id(current_session)
+
+    if current_catalog_document_id == document_id:
+        await callback.answer(
+            CATALOG_DOCUMENT_ALREADY_OPEN_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if _is_session_generating(current_session):
+        await callback.answer(CATALOG_OPEN_BUSY_TEXT, show_alert=True)
         return
 
     document, chunks = await get_catalog_document_chunks(

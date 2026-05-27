@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
@@ -35,6 +36,7 @@ from texts.messages import (
     EXPORT_AUDIO_CAPTION_TEXT,
     EXPORT_AUDIO_CONCATENATING_TEXT,
     EXPORT_AUDIO_GENERATION_ERROR,
+    EXPORT_AUDIO_NOT_READY_TEXT,
     SESSION_NOT_FOUND_OR_FINISHED_TEXT,
     build_export_audio_part_text,
     build_export_audio_progress_text,
@@ -75,6 +77,10 @@ def _is_same_session(session: ReadingSession | None, session_id: str | None) -> 
         return True
 
     return session.session_id == session_id
+
+
+def _reading_is_complete(session: ReadingSession) -> bool:
+    return session.index >= len(session.chunks)
 
 
 def _export_max_size_bytes() -> int:
@@ -120,8 +126,16 @@ async def export_reading_audio_now(
         await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
         return
 
+    if not _reading_is_complete(session):
+        await safe_delete_message(status_msg)
+        await message.answer(EXPORT_AUDIO_NOT_READY_TEXT)
+        await finish_generation_if_session(user_id, expected_session_id)
+        return
+
     generated_audio_files: list[str] = []
     combined_audio_file: str | None = None
+    export_started_at = time.perf_counter()
+    tts_started_at = export_started_at
 
     try:
         voice_pref, rate = await get_effective_user_settings(user_id)
@@ -177,6 +191,7 @@ async def export_reading_audio_now(
                 rate=rate,
                 provider_chain=provider_chain,
                 progress_callback=progress_callback,
+                user_id=user_id,
             )
 
             if not audio_files:
@@ -191,12 +206,30 @@ async def export_reading_audio_now(
 
             generated_audio_files.extend(audio_files)
 
+        tts_elapsed_ms = int((time.perf_counter() - tts_started_at) * 1000)
+        concat_started_at = time.perf_counter()
+
         await safe_edit_message(status_msg, EXPORT_AUDIO_CONCATENATING_TEXT)
 
         combined_audio_file = await concat_ogg_files(
             generated_audio_files,
             smooth=EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
             crossfade_ms=EXPORT_AUDIO_CROSSFADE_MS,
+        )
+        concat_elapsed_ms = int((time.perf_counter() - concat_started_at) * 1000)
+        total_elapsed_ms = int((time.perf_counter() - export_started_at) * 1000)
+        logger.info(
+            "ReadingExportAudioService: export audio prepared user_id=%s "
+            "session_id=%s parts=%s audio_files=%s tts_ms=%s concat_ms=%s "
+            "total_ms=%s smooth_merge=%s",
+            user_id,
+            expected_session_id,
+            total_parts,
+            len(generated_audio_files),
+            tts_elapsed_ms,
+            concat_elapsed_ms,
+            total_elapsed_ms,
+            EXPORT_AUDIO_SMOOTH_MERGE_ENABLED,
         )
         combined_file_size_mb = _file_size_mb(combined_audio_file)
 
@@ -267,6 +300,10 @@ async def export_reading_audio(
     if not chunks:
         await cleanup_session(user_id)
         await message.answer(SESSION_NOT_FOUND_OR_FINISHED_TEXT)
+        return
+
+    if not _reading_is_complete(session):
+        await message.answer(EXPORT_AUDIO_NOT_READY_TEXT)
         return
 
     await update_reading_session(user_id, is_generating=True)

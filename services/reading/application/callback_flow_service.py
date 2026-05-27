@@ -44,6 +44,7 @@ from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
     EXPORT_AUDIO_ACCESS_DENIED_TEXT,
     EXPORT_AUDIO_GENERATION_ERROR,
+    EXPORT_AUDIO_NOT_READY_TEXT,
     OUTDATED_READING_BUTTON_TEXT,
     READING_STOPPED_ALERT_TEXT,
     READING_STOPPED_MESSAGE_TEXT,
@@ -207,6 +208,20 @@ def _summary_has_next(session: ReadingSession) -> bool:
     current_index = int(session.get("index", 0))
 
     return current_index < len(chunks)
+
+
+def _reading_is_complete(session: ReadingSession) -> bool:
+    chunks = session.get("chunks") or []
+
+    if not chunks:
+        return False
+
+    try:
+        current_index = int(session.get("index", 0))
+    except (TypeError, ValueError):
+        return False
+
+    return current_index >= len(chunks)
 
 
 def _summary_keyboard(
@@ -386,6 +401,7 @@ async def _send_cached_summary(
                 provider,
                 voice=voice,
             ),
+            user_id=user_id,
         )
 
         if not audio_files:
@@ -511,7 +527,7 @@ async def process_read_next(callback: Any) -> None:
             callback,
             reply_markup=summary_only_keyboard(
                 callback_session_id,
-                can_export_audio=await is_premium_user(user_id),
+                can_export_audio=False,
                 show_summary_button=show_summary_button,
             ),
         )
@@ -656,6 +672,7 @@ async def process_read_summary(callback: Any) -> None:
                 tts_provider,
                 voice=voice,
             ),
+            user_id=user_id,
         )
 
         if not audio_files:
@@ -777,6 +794,13 @@ async def process_read_export_audio(callback: Any) -> None:
     if not await is_premium_user(user_id):
         await callback.answer(
             EXPORT_AUDIO_ACCESS_DENIED_TEXT,
+            show_alert=True,
+        )
+        return
+
+    if not _reading_is_complete(context.session):
+        await callback.answer(
+            EXPORT_AUDIO_NOT_READY_TEXT,
             show_alert=True,
         )
         return

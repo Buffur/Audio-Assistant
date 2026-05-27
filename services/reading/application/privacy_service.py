@@ -4,7 +4,7 @@ import time
 from redis.exceptions import RedisError
 
 from config import READING_SESSION_BACKEND, READING_SESSION_TTL_SECONDS
-from services.audio_cache import clear_audio_cache
+from services.audio_cache import delete_user_audio_cache
 from services.reading import audio_queue
 from services.reading.infrastructure.session_store import (
     cleanup_reading_session,
@@ -115,10 +115,11 @@ async def cleanup_user_private_runtime_data(user_id: int) -> dict[str, int]:
     session = await get_reading_session_model(user_id)
     await cleanup_reading_session(user_id)
     queued_audio_jobs = await purge_queued_audio_jobs_for_user(user_id)
-    audio_cache_result = clear_audio_cache()
+    audio_cache_result = delete_user_audio_cache(user_id)
 
     return {
         "reading_session": 1 if session else 0,
         "queued_audio_jobs": queued_audio_jobs,
         "audio_cache_files": audio_cache_result["removed_files"],
+        "audio_cache_owner_links": audio_cache_result["owner_links_removed"],
     }

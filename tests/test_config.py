@@ -438,9 +438,18 @@ def test_export_audio_max_size_is_validated() -> None:
     )
 
     assert settings.EXPORT_AUDIO_MAX_SIZE_MB == 32
-    assert settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED is True
+    assert settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED is False
     assert settings.EXPORT_AUDIO_CROSSFADE_MS == 80
     assert settings.EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS == 180
+
+    smooth_settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+        EXPORT_AUDIO_SMOOTH_MERGE_ENABLED=True,
+    )
+
+    assert smooth_settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED is True
 
     with pytest.raises(ValueError):
         Settings(

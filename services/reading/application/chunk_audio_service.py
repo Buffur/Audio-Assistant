@@ -176,6 +176,7 @@ async def send_audio_chunk_now(
 
         can_export_audio = (
             await is_premium_user(user_id)
+            and not has_next
             and (len(chunks) > 1 or len(audio_files) > 1)
         )
         keyboard = reading_navigation_keyboard(

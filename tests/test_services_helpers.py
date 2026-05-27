@@ -430,6 +430,112 @@ def test_audio_cache_roundtrip(workspace_tmp_path: Path, monkeypatch) -> None:
     Path(cached_copy).unlink()
 
 
+def test_audio_cache_tracks_owners_and_deletes_only_unshared_cache(
+    workspace_tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_ENABLED", True)
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_DIR", str(workspace_tmp_path))
+
+    source_path = workspace_tmp_path / "source.ogg"
+    source_path.write_bytes(b"voice")
+
+    audio_cache.save_audio_to_cache(
+        text="shared",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        audio_path=str(source_path),
+        user_id=1,
+    )
+    audio_cache.save_audio_to_cache(
+        text="shared",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        audio_path=str(source_path),
+        user_id=2,
+    )
+
+    cache_key = audio_cache.build_audio_cache_key(
+        "shared",
+        "uk-UA-PolinaNeural",
+        "+0%",
+    )
+    cached_path = audio_cache.get_cached_audio_path(cache_key)
+
+    first_result = audio_cache.delete_user_audio_cache(1)
+
+    assert first_result["owner_links_removed"] == 1
+    assert first_result["removed_files"] == 0
+    assert cached_path.exists()
+
+    second_result = audio_cache.delete_user_audio_cache(2)
+
+    assert second_result["owner_links_removed"] == 1
+    assert second_result["removed_files"] == 1
+    assert not cached_path.exists()
+    assert not audio_cache.get_audio_cache_owner_path(cache_key).exists()
+
+
+def test_audio_cache_hit_registers_owner(
+    workspace_tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_ENABLED", True)
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_DIR", str(workspace_tmp_path))
+
+    source_path = workspace_tmp_path / "source.ogg"
+    source_path.write_bytes(b"voice")
+
+    audio_cache.save_audio_to_cache(
+        text="hit",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        audio_path=str(source_path),
+        user_id=1,
+    )
+
+    cached_copy = audio_cache.get_audio_from_cache(
+        text="hit",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        user_id=2,
+    )
+
+    assert cached_copy is not None
+    Path(cached_copy).unlink()
+
+    first_result = audio_cache.delete_user_audio_cache(1)
+    second_result = audio_cache.delete_user_audio_cache(2)
+
+    assert first_result["removed_files"] == 0
+    assert second_result["removed_files"] == 1
+
+
+def test_user_audio_cache_delete_ignores_legacy_unowned_cache(
+    workspace_tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_ENABLED", True)
+    monkeypatch.setattr(audio_cache, "AUDIO_CACHE_DIR", str(workspace_tmp_path))
+
+    cache_key = audio_cache.build_audio_cache_key(
+        "legacy",
+        "uk-UA-PolinaNeural",
+        "+0%",
+    )
+    cached_path = audio_cache.get_cached_audio_path(cache_key)
+    cached_path.write_bytes(b"legacy")
+
+    result = audio_cache.delete_user_audio_cache(1)
+
+    assert result == {
+        "removed_files": 0,
+        "removed_bytes": 0,
+        "owner_links_removed": 0,
+    }
+    assert cached_path.exists()
+
+
 def test_audio_cache_cleanup_removes_old_and_oversized_files(
     workspace_tmp_path: Path,
     monkeypatch,

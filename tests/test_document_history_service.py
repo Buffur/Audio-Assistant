@@ -47,6 +47,16 @@ def test_build_text_preview_collapses_whitespace_and_truncates() -> None:
     assert preview.endswith("...")
 
 
+def test_build_content_hash_normalizes_whitespace() -> None:
+    first_hash = service.build_content_hash("  First   line.\nSecond line.  ")
+    second_hash = service.build_content_hash("First line. Second line.")
+
+    assert first_hash is not None
+    assert first_hash == second_hash
+    assert service.build_content_hash("Different text") != first_hash
+    assert service.build_content_hash("  ") is None
+
+
 def test_chunks_serialization_roundtrip() -> None:
     chunks = ["перший", "другий"]
 
@@ -95,6 +105,129 @@ async def test_save_document_history_from_message(monkeypatch) -> None:
     assert captured["source_type"] == "text"
     assert captured["source_name"] == "Текстове повідомлення"
     assert captured["chunks_count"] == 2
+    assert captured["content_hash"] == service.build_content_hash("hello world")
+
+
+@pytest.mark.asyncio
+async def test_get_cached_summary_for_text(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_get_latest_document_summary_by_content_hash(**kwargs):
+        captured.update(kwargs)
+        return {
+            "summary_text": " Cached summary ",
+            "summary_voice_file_ids_json": '["voice-1"]',
+            "summary_voice_voice": "uk-UA-PolinaNeural",
+            "summary_voice_rate": "+0%",
+            "summary_voice_provider": "edge",
+        }
+
+    monkeypatch.setattr(
+        service,
+        "get_latest_document_summary_by_content_hash",
+        fake_get_latest_document_summary_by_content_hash,
+    )
+
+    cached = await service.get_cached_summary_for_text(
+        user_id=10,
+        text="hello   world",
+        chunks=["hello world"],
+        exclude_document_id=42,
+    )
+
+    assert cached == service.CachedDocumentSummary(
+        summary_text="Cached summary",
+        summary_voice_file_ids=["voice-1"],
+        summary_voice_voice="uk-UA-PolinaNeural",
+        summary_voice_rate="+0%",
+        summary_voice_provider="edge",
+    )
+    assert captured == {
+        "user_id": 10,
+        "content_hash": service.build_content_hash("hello world"),
+        "exclude_document_id": 42,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_cached_summary_for_text_falls_back_to_chunks(monkeypatch) -> None:
+    calls = []
+
+    async def fake_get_latest_document_summary_by_content_hash(**kwargs):
+        calls.append(("content_hash", kwargs))
+        return None
+
+    async def fake_get_latest_document_summary_by_chunks_json(**kwargs):
+        calls.append(("chunks_json", kwargs))
+        return {
+            "summary_text": "Cached summary",
+            "summary_voice_file_ids_json": None,
+            "summary_voice_voice": None,
+            "summary_voice_rate": None,
+            "summary_voice_provider": None,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "get_latest_document_summary_by_content_hash",
+        fake_get_latest_document_summary_by_content_hash,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_latest_document_summary_by_chunks_json",
+        fake_get_latest_document_summary_by_chunks_json,
+    )
+
+    cached = await service.get_cached_summary_for_text(
+        user_id=10,
+        text="hello world",
+        chunks=["hello", "world"],
+        exclude_document_id=42,
+    )
+
+    assert cached is not None
+    assert cached.summary_text == "Cached summary"
+    assert calls == [
+        (
+            "content_hash",
+            {
+                "user_id": 10,
+                "content_hash": service.build_content_hash("hello world"),
+                "exclude_document_id": 42,
+            },
+        ),
+        (
+            "chunks_json",
+            {
+                "user_id": 10,
+                "chunks_json": service.serialize_chunks(["hello", "world"]),
+                "exclude_document_id": 42,
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_cached_summary_for_text_ignores_empty_cache(monkeypatch) -> None:
+    async def fake_get_latest_document_summary_by_content_hash(**kwargs):
+        return {
+            "summary_text": "  ",
+            "summary_voice_file_ids_json": None,
+            "summary_voice_voice": None,
+            "summary_voice_rate": None,
+            "summary_voice_provider": None,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "get_latest_document_summary_by_content_hash",
+        fake_get_latest_document_summary_by_content_hash,
+    )
+
+    assert await service.get_cached_summary_for_text(
+        user_id=10,
+        text="hello",
+    ) is None
 
 
 @pytest.mark.asyncio

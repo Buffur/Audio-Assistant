@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from redis.exceptions import RedisError
@@ -164,6 +165,12 @@ async def test_audio_queue_stats_reports_redis_backend(monkeypatch) -> None:
             if key == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY:
                 return 1
 
+            if key == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY:
+                return 2
+
+            if key == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY:
+                return 1
+
             raise AssertionError(f"unexpected key: {key}")
 
     async def fake_get_redis_client():
@@ -175,12 +182,148 @@ async def test_audio_queue_stats_reports_redis_backend(monkeypatch) -> None:
     stats = await reading_audio_queue.get_audio_queue_stats()
 
     assert stats.backend == "redis"
-    assert stats.pending == 3
-    assert stats.processing == 1
-    assert stats.active == 4
+    assert stats.pending == 5
+    assert stats.processing == 2
+    assert stats.active == 7
     assert stats.is_full is False
-    assert stats.available_capacity == reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE - 4
+    assert stats.available_capacity == reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE - 7
     assert stats.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_redis_audio_queue_position_ignores_prefetch_jobs(monkeypatch) -> None:
+    send_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_send_chunk_job(
+            user_id=1,
+            chat_id=1001,
+            session_id="session-send",
+            status_message_id=None,
+        )
+    )
+    export_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_export_audio_job(
+            user_id=2,
+            chat_id=1002,
+            session_id="session-export",
+            status_message_id=None,
+        )
+    )
+    prefetch_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_prefetch_chunk_job(
+            user_id=1,
+            session_id="session-send",
+            chunk_index=1,
+            chunk_text="next",
+            voice="uk-UA-PolinaNeural",
+            rate="+0%",
+            provider_chain=["edge"],
+        )
+    )
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.pending = [prefetch_payload, send_payload]
+            self.processing = [prefetch_payload, export_payload]
+
+        async def eval(
+            self,
+            script: str,
+            keys_count: int,
+            pending_key: str,
+            processing_key: str,
+        ) -> int:
+            assert keys_count == 2
+            assert pending_key == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+            assert processing_key == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+
+            return sum(
+                1
+                for raw_job in [*self.pending, *self.processing]
+                if json.loads(raw_job).get("type") in {"send_chunk", "export_audio"}
+            )
+
+    async def fake_get_redis_client():
+        return FakeRedis()
+
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+
+    assert await reading_audio_queue.redis_audio_queue_position() == 3
+
+
+@pytest.mark.asyncio
+async def test_redis_audio_queue_pops_user_visible_before_prefetch() -> None:
+    send_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_send_chunk_job(
+            user_id=1,
+            chat_id=1001,
+            session_id="session-send",
+            status_message_id=None,
+        )
+    )
+    prefetch_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_prefetch_chunk_job(
+            user_id=2,
+            session_id="session-prefetch",
+            chunk_index=1,
+            chunk_text="next",
+            voice="uk-UA-PolinaNeural",
+            rate="+0%",
+            provider_chain=["edge"],
+        )
+    )
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.pending_by_key = {
+                reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY: [send_payload],
+                reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY: [
+                    prefetch_payload
+                ],
+            }
+            self.processing_by_key = {
+                reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY: [],
+                reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY: [],
+            }
+            self.pop_calls: list[str] = []
+
+        async def brpoplpush(
+            self,
+            source: str,
+            destination: str,
+            timeout: int,
+        ):
+            self.pop_calls.append(source)
+            pending = self.pending_by_key[source]
+
+            if not pending:
+                return None
+
+            raw_job = pending.pop()
+            self.processing_by_key[destination].insert(0, raw_job)
+            return raw_job
+
+        async def lrem(self, key: str, count: int, value: str) -> int:
+            self.processing_by_key[key].remove(value)
+            return 1
+
+    fake_redis = FakeRedis()
+
+    try:
+        raw_job, job, priority, processing_key, user_reserved = (
+            await reading_audio_queue._pop_next_redis_audio_job(fake_redis)
+        )
+    finally:
+        reading_audio_queue._redis_audio_generation_active_raw_jobs.clear()
+
+    assert raw_job == send_payload
+    assert job["type"] == "send_chunk"
+    assert priority == "user_visible"
+    assert processing_key == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    assert user_reserved is False
+    assert fake_redis.pop_calls == [reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY]
+    assert fake_redis.pending_by_key[
+        reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    ] == [prefetch_payload]
 
 
 @pytest.mark.asyncio
@@ -218,6 +361,105 @@ async def test_memory_audio_queue_backpressure_counts_processing_job(
 
     release.set()
     await reading_audio_queue.close_audio_queue(timeout_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_memory_audio_queue_position_ignores_prefetch_jobs(
+    monkeypatch,
+) -> None:
+    prefetch_started = asyncio.Event()
+    release_prefetch = asyncio.Event()
+
+    async def prefetch_job() -> None:
+        prefetch_started.set()
+        await release_prefetch.wait()
+
+    async def send_job() -> None:
+        return None
+
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "memory")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_WORKER_COUNT", 1)
+    await reading_audio_queue.close_audio_queue(timeout_seconds=0.1)
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_metadata(
+            prefetch_job,
+            user_id=1,
+            job_type="prefetch_chunk",
+        )
+    )
+    await asyncio.wait_for(prefetch_started.wait(), timeout=1)
+
+    assert reading_audio_queue.memory_audio_queue_position() == 1
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_metadata(
+            send_job,
+            user_id=2,
+            job_type="send_chunk",
+        )
+    )
+
+    assert reading_audio_queue.memory_audio_queue_position() == 2
+
+    release_prefetch.set()
+    await reading_audio_queue.close_audio_queue(timeout_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_memory_audio_queue_prioritizes_user_visible_jobs_over_prefetch(
+    monkeypatch,
+) -> None:
+    release_prefetch = asyncio.Event()
+    started_prefetch = asyncio.Event()
+    started_send = asyncio.Event()
+    execution_order: list[str] = []
+
+    async def first_prefetch_job() -> None:
+        execution_order.append("prefetch:first")
+        started_prefetch.set()
+        await release_prefetch.wait()
+
+    async def second_prefetch_job() -> None:
+        execution_order.append("prefetch:second")
+
+    async def send_job() -> None:
+        execution_order.append("send")
+        started_send.set()
+
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "memory")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_WORKER_COUNT", 1)
+    await reading_audio_queue.close_audio_queue(timeout_seconds=0.1)
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_metadata(
+            first_prefetch_job,
+            user_id=1,
+            job_type="prefetch_chunk",
+        )
+    )
+    await asyncio.wait_for(started_prefetch.wait(), timeout=1)
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_metadata(
+            second_prefetch_job,
+            user_id=2,
+            job_type="prefetch_chunk",
+        )
+    )
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_metadata(
+            send_job,
+            user_id=3,
+            job_type="send_chunk",
+        )
+    )
+
+    release_prefetch.set()
+    await asyncio.wait_for(started_send.wait(), timeout=1)
+    await reading_audio_queue.close_audio_queue(timeout_seconds=1.0)
+
+    assert execution_order == ["prefetch:first", "send", "prefetch:second"]
 
 
 @pytest.mark.asyncio

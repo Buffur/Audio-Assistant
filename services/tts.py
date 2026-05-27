@@ -342,6 +342,7 @@ async def _generate_chunk_voice_for_provider(
     chunk_index: int,
     chunks_count: int,
     provider_chain: list[str] | None = None,
+    user_id: int | None = None,
 ) -> tuple[str, str, bool, str]:
     providers = _provider_chain(provider_chain)
     provider_errors: list[str] = []
@@ -349,11 +350,16 @@ async def _generate_chunk_voice_for_provider(
     for provider in providers:
         provider_spec = _provider_spec(provider)
         cache_voice = _cache_voice_for_provider(provider, voice)
-        cached_audio_path = get_audio_from_cache(
-            text=chunk,
-            voice=cache_voice,
-            rate=rate,
-        )
+        cache_lookup_kwargs = {
+            "text": chunk,
+            "voice": cache_voice,
+            "rate": rate,
+        }
+
+        if user_id is not None:
+            cache_lookup_kwargs["user_id"] = user_id
+
+        cached_audio_path = get_audio_from_cache(**cache_lookup_kwargs)
 
         if cached_audio_path:
             logger.info(
@@ -434,6 +440,7 @@ async def generate_voice(
     raise_on_error: bool = False,
     provider_chain: list[str] | None = None,
     progress_callback: TTSProgressCallback | None = None,
+    user_id: int | None = None,
 ) -> list[str]:
     """
     Генерує voice-файли для Telegram.
@@ -482,15 +489,21 @@ async def generate_voice(
                     chunk_index=index,
                     chunks_count=len(chunks),
                     provider_chain=providers,
+                    user_id=user_id,
                 )
 
             if not cache_hit:
-                save_audio_to_cache(
-                    text=chunk,
-                    voice=cache_voice,
-                    rate=rate,
-                    audio_path=ogg_path,
-                )
+                cache_save_kwargs = {
+                    "text": chunk,
+                    "voice": cache_voice,
+                    "rate": rate,
+                    "audio_path": ogg_path,
+                }
+
+                if user_id is not None:
+                    cache_save_kwargs["user_id"] = user_id
+
+                save_audio_to_cache(**cache_save_kwargs)
 
             generated_files.append(ogg_path)
             await _notify_progress(

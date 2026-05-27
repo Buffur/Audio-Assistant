@@ -202,6 +202,49 @@ async def test_generate_voice_saves_generated_audio_to_cache(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_generate_voice_passes_user_id_to_audio_cache(monkeypatch) -> None:
+    saved = {}
+    cache_lookup = {}
+
+    async def fake_generate_chunk_voice(
+        chunk,
+        voice,
+        rate,
+        chunk_index,
+        chunks_count,
+    ):
+        return "/tmp/generated.ogg"
+
+    def fake_get_audio_from_cache(**kwargs):
+        cache_lookup.update(kwargs)
+        return None
+
+    def fake_save_audio_to_cache(**kwargs):
+        saved.update(kwargs)
+
+    monkeypatch.setattr(
+        tts,
+        "split_text",
+        lambda text, max_length=None: ["generated"],
+    )
+    monkeypatch.setattr(tts, "get_audio_from_cache", fake_get_audio_from_cache)
+    monkeypatch.setattr(tts, "_generate_chunk_voice", fake_generate_chunk_voice)
+    monkeypatch.setattr(tts, "save_audio_to_cache", fake_save_audio_to_cache)
+
+    result = await tts.generate_voice(
+        text="generated",
+        voice="uk-UA-PolinaNeural",
+        rate="+0%",
+        raise_on_error=True,
+        user_id=123,
+    )
+
+    assert result == ["/tmp/generated.ogg"]
+    assert cache_lookup["user_id"] == 123
+    assert saved["user_id"] == 123
+
+
+@pytest.mark.asyncio
 async def test_generate_voice_uses_gemini_provider_cache_key(monkeypatch) -> None:
     saved = {}
     captured = {}

@@ -93,6 +93,7 @@ async def run_prefetch_audio_job(command: PrefetchAudioJobCommand) -> None:
             voice=command.voice,
             rate=command.rate,
             provider_chain=command.provider_chain,
+            user_id=command.user_id,
         )
 
         session = await get_reading_session_model(command.user_id)
@@ -222,6 +223,7 @@ async def get_audio_from_prefetch_or_generate(
                 command.voice,
                 command.rate,
                 provider_chain=command.provider_chain,
+                user_id=command.user_id,
             )
 
         except Exception:
@@ -234,6 +236,7 @@ async def get_audio_from_prefetch_or_generate(
                 command.voice,
                 command.rate,
                 provider_chain=command.provider_chain,
+                user_id=command.user_id,
             )
 
         await update_reading_session(command.user_id, prefetch_task=None)
@@ -273,6 +276,7 @@ async def get_audio_from_prefetch_or_generate(
             command.rate,
             provider_chain=command.provider_chain,
             progress_callback=progress_callback,
+            user_id=command.user_id,
         )
         return AudioFilesResult(audio_files=audio_files)
 
@@ -310,6 +314,7 @@ async def start_prefetch_next_chunk(
             voice=next_voice,
             rate=command.rate,
             provider_chain=provider_chain,
+            user_id=command.user_id,
         )
 
     result = await queue_orchestrator.enqueue_prefetch_audio(

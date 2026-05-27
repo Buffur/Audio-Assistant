@@ -75,6 +75,12 @@ READING_AUDIO_QUEUE_REDIS_KEY = reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KE
 READING_AUDIO_QUEUE_MAX_SIZE = reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE
 READING_AUDIO_QUEUE_WORKER_COUNT = reading_audio_queue.READING_AUDIO_QUEUE_WORKER_COUNT
 REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY = (
+    reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+)
+REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY = (
+    reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+)
 
 AudioGenerationJob = reading_audio_queue.AudioGenerationJob
 ReadingSession = dict[str, object]
@@ -108,6 +114,8 @@ def _sync_audio_queue_compat_settings() -> None:
     global READING_AUDIO_QUEUE_MAX_SIZE
     global READING_AUDIO_QUEUE_WORKER_COUNT
     global REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    global REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    global REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
     global _last_audio_queue_backend
     global _last_audio_queue_redis_key
     global _last_audio_queue_max_size
@@ -141,7 +149,19 @@ def _sync_audio_queue_compat_settings() -> None:
     reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY = (
         f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
     )
+    reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY = (
+        f"{READING_AUDIO_QUEUE_REDIS_KEY}:prefetch"
+    )
+    reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY = (
+        f"{reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY}:processing"
+    )
     REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY = (
+        reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    )
+    REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY = (
+        reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+    )
     _last_audio_queue_backend = READING_AUDIO_QUEUE_BACKEND
     _last_audio_queue_redis_key = READING_AUDIO_QUEUE_REDIS_KEY
     _last_audio_queue_max_size = READING_AUDIO_QUEUE_MAX_SIZE
@@ -498,6 +518,7 @@ async def reply_with_voice(
                 tts_provider,
                 voice=voice,
             ),
+            user_id=user_id,
         )
 
         if not audio_files:

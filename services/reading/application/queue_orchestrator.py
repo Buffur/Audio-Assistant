@@ -269,7 +269,11 @@ class ReadingAudioQueueOrchestrator:
             )
 
         try:
-            audio_queue.set_audio_generation_job_user_id(job, command.user_id)
+            audio_queue.set_audio_generation_job_metadata(
+                job,
+                user_id=command.user_id,
+                job_type="send_chunk",
+            )
             self.enqueue_memory_audio_job(job)
             return QueueEnqueueResult(
                 status="queued",
@@ -383,7 +387,11 @@ class ReadingAudioQueueOrchestrator:
             )
 
         try:
-            audio_queue.set_audio_generation_job_user_id(job, command.user_id)
+            audio_queue.set_audio_generation_job_metadata(
+                job,
+                user_id=command.user_id,
+                job_type="export_audio",
+            )
             self.enqueue_memory_audio_job(job)
             return QueueEnqueueResult(
                 status="queued",
@@ -474,7 +482,11 @@ class ReadingAudioQueueOrchestrator:
                 if not memory_task.done():
                     memory_task.set_exception(error)
 
-        audio_queue.set_audio_generation_job_user_id(job, command.user_id)
+        audio_queue.set_audio_generation_job_metadata(
+            job,
+            user_id=command.user_id,
+            job_type="prefetch_chunk",
+        )
         self.enqueue_memory_audio_job(job)
 
         return QueueEnqueueResult(

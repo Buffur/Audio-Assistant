@@ -8,7 +8,10 @@ from aiogram import Router, types
 
 from handlers.callback_guards import require_private_message_user
 from services.content_extractor import SUPPORTED_FORMATS_ERROR, extract_text_from_message
-from services.document_history_service import save_document_history_from_message
+from services.document_history_service import (
+    get_cached_summary_for_text,
+    save_document_history_from_message,
+)
 from services.reading_service import (
     cleanup_session,
     is_audio_generation_active,
@@ -230,12 +233,29 @@ async def _process_message(message: types.Message, user_id: int) -> None:
         text=text,
         chunks=chunks,
     )
+    cached_summary = await get_cached_summary_for_text(
+        user_id=user_id,
+        text=text,
+        chunks=chunks,
+        exclude_document_id=document_id,
+    )
+    cached_summary_kwargs = {}
+
+    if cached_summary is not None:
+        cached_summary_kwargs = {
+            "summary_text": cached_summary.summary_text,
+            "summary_voice_file_ids": cached_summary.summary_voice_file_ids,
+            "summary_voice_voice": cached_summary.summary_voice_voice,
+            "summary_voice_rate": cached_summary.summary_voice_rate,
+            "summary_voice_provider": cached_summary.summary_voice_provider,
+        }
 
     await start_reading_session(
         user_id=user_id,
         chunks=chunks,
         catalog_document_id=document_id,
         cleanup_existing=False,
+        **cached_summary_kwargs,
     )
 
     if len(chunks) > 1:

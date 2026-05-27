@@ -4,6 +4,7 @@ import pytest_asyncio
 from handlers import reading_callbacks
 from services.reading.application import callback_flow_service
 from keyboards.reading import (
+    READ_EXPORT_AUDIO_ACTION,
     READ_NEXT_ACTION,
     READ_SUMMARY_ACTION,
     build_reading_callback,
@@ -11,6 +12,7 @@ from keyboards.reading import (
 from services import reading_session_store as store
 from texts.limits import SUMMARY_LIMIT_REACHED_TEXT
 from texts.messages import (
+    EXPORT_AUDIO_NOT_READY_TEXT,
     OUTDATED_READING_BUTTON_TEXT,
     SESSION_NOT_FOUND_TEXT,
     SUMMARY_ALREADY_READY_TEXT,
@@ -651,3 +653,80 @@ async def test_read_next_keeps_summary_button_until_cached_summary_is_shown(
         callback_data.startswith(READ_SUMMARY_ACTION)
         for callback_data in callbacks
     )
+
+
+@pytest.mark.asyncio
+async def test_read_next_removes_export_button_before_last_part_for_premium(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 0,
+            "is_generating": False,
+        },
+    )
+
+    async def fake_is_premium_user(user_id: int) -> bool:
+        return True
+
+    async def fake_send_audio_chunk(message, user_id) -> None:
+        captured["sent"] = True
+
+    monkeypatch.setattr(callback_flow_service, "is_premium_user", fake_is_premium_user)
+    monkeypatch.setattr(callback_flow_service, "send_audio_chunk", fake_send_audio_chunk)
+
+    callback = FakeCallback(action=READ_NEXT_ACTION)
+
+    await reading_callbacks.process_read_next(callback)
+
+    callbacks = [
+        button.callback_data
+        for row in callback.message.reply_markup_edits[0].inline_keyboard
+        for button in row
+    ]
+
+    assert captured["sent"] is True
+    assert all(
+        not callback_data.startswith(READ_EXPORT_AUDIO_ACTION)
+        for callback_data in callbacks
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_audio_rejected_before_last_part_for_premium(monkeypatch) -> None:
+    await store.set_reading_session(
+        user_id=1,
+        session={
+            "session_id": "session-1",
+            "chunks": ["part 1", "part 2"],
+            "index": 1,
+            "is_generating": False,
+        },
+    )
+
+    async def fake_is_premium_user(user_id: int) -> bool:
+        return True
+
+    async def fail_export_reading_audio(*args, **kwargs) -> None:
+        raise AssertionError("not-ready export must not reach export service")
+
+    monkeypatch.setattr(callback_flow_service, "is_premium_user", fake_is_premium_user)
+    monkeypatch.setattr(
+        callback_flow_service,
+        "export_reading_audio",
+        fail_export_reading_audio,
+    )
+
+    callback = FakeCallback(action=READ_EXPORT_AUDIO_ACTION)
+
+    await reading_callbacks.process_read_export_audio(callback)
+
+    assert callback.answers == [{
+        "text": EXPORT_AUDIO_NOT_READY_TEXT,
+        "show_alert": True,
+    }]

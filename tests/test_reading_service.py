@@ -359,6 +359,9 @@ async def test_enqueue_redis_audio_job_uses_active_capacity_script(monkeypatch) 
             keys_count: int,
             pending_key: str,
             processing_key: str,
+            prefetch_pending_key: str,
+            prefetch_processing_key: str,
+            target_pending_key: str,
             max_size: str,
             value: str,
         ) -> int:
@@ -366,6 +369,9 @@ async def test_enqueue_redis_audio_job_uses_active_capacity_script(monkeypatch) 
             captured["keys_count"] = keys_count
             captured["pending_key"] = pending_key
             captured["processing_key"] = processing_key
+            captured["prefetch_pending_key"] = prefetch_pending_key
+            captured["prefetch_processing_key"] = prefetch_processing_key
+            captured["target_pending_key"] = target_pending_key
             captured["max_size"] = max_size
             captured["payload"] = value
             return 1
@@ -393,9 +399,21 @@ async def test_enqueue_redis_audio_job_uses_active_capacity_script(monkeypatch) 
     )
 
     assert captured["started"] is True
-    assert captured["keys_count"] == 2
+    assert captured["keys_count"] == 5
     assert captured["pending_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
     assert captured["processing_key"] == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    assert (
+        captured["prefetch_pending_key"]
+        == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    )
+    assert (
+        captured["prefetch_processing_key"]
+        == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+    )
+    assert (
+        captured["target_pending_key"]
+        == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+    )
     assert captured["max_size"] == str(reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE)
     assert "pending + processing" in captured["script"]
     assert '"type":"send_chunk"' in captured["payload"]
@@ -434,6 +452,79 @@ async def test_enqueue_redis_audio_job_rejects_when_active_capacity_is_full(
 
 
 @pytest.mark.asyncio
+async def test_enqueue_redis_audio_job_routes_prefetch_to_low_priority_queue(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeRedis:
+        async def eval(
+            self,
+            script: str,
+            keys_count: int,
+            pending_key: str,
+            processing_key: str,
+            prefetch_pending_key: str,
+            prefetch_processing_key: str,
+            target_pending_key: str,
+            max_size: str,
+            value: str,
+        ) -> int:
+            captured["keys_count"] = keys_count
+            captured["pending_key"] = pending_key
+            captured["processing_key"] = processing_key
+            captured["prefetch_pending_key"] = prefetch_pending_key
+            captured["prefetch_processing_key"] = prefetch_processing_key
+            captured["target_pending_key"] = target_pending_key
+            captured["payload"] = value
+            return 1
+
+    async def fake_start_workers(job_handler) -> None:
+        return None
+
+    async def fake_get_redis_client():
+        return FakeRedis()
+
+    async def fake_job_handler(bot, job) -> None:
+        return None
+
+    monkeypatch.setattr(reading_audio_queue, "start_audio_workers", fake_start_workers)
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+
+    await reading_audio_queue.enqueue_redis_audio_job(
+        reading_audio_queue.build_prefetch_chunk_job(
+            user_id=1,
+            session_id="session-1",
+            chunk_index=1,
+            chunk_text="next",
+            voice="uk-UA-PolinaNeural",
+            rate="+0%",
+            provider_chain=["edge"],
+        ),
+        fake_job_handler,
+    )
+
+    payload = json.loads(captured["payload"])
+
+    assert captured["keys_count"] == 5
+    assert captured["pending_key"] == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+    assert captured["processing_key"] == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
+    assert (
+        captured["prefetch_pending_key"]
+        == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    )
+    assert (
+        captured["prefetch_processing_key"]
+        == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+    )
+    assert (
+        captured["target_pending_key"]
+        == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    )
+    assert payload["type"] == "prefetch_chunk"
+
+
+@pytest.mark.asyncio
 async def test_reading_service_redis_queue_compat_aliases_update_audio_queue(
     monkeypatch,
 ) -> None:
@@ -446,11 +537,17 @@ async def test_reading_service_redis_queue_compat_aliases_update_audio_queue(
             keys_count: int,
             pending_key: str,
             processing_key: str,
+            prefetch_pending_key: str,
+            prefetch_processing_key: str,
+            target_pending_key: str,
             max_size: str,
             value: str,
         ) -> int:
             captured["pending_key"] = pending_key
             captured["processing_key"] = processing_key
+            captured["prefetch_pending_key"] = prefetch_pending_key
+            captured["prefetch_processing_key"] = prefetch_processing_key
+            captured["target_pending_key"] = target_pending_key
             captured["max_size"] = max_size
             captured["payload"] = value
             return 1
@@ -484,6 +581,12 @@ async def test_reading_service_redis_queue_compat_aliases_update_audio_queue(
 
     assert captured["pending_key"] == "test:compat:queue"
     assert captured["processing_key"] == "test:compat:queue:processing"
+    assert captured["prefetch_pending_key"] == "test:compat:queue:prefetch"
+    assert (
+        captured["prefetch_processing_key"]
+        == "test:compat:queue:prefetch:processing"
+    )
+    assert captured["target_pending_key"] == "test:compat:queue"
     assert captured["max_size"] == "1"
     assert payload["status_message_id"] is None
     assert payload["session_id"] == "legacy-session"
@@ -511,16 +614,28 @@ async def test_requeue_interrupted_redis_audio_jobs(monkeypatch) -> None:
         def __init__(self) -> None:
             self.processing = ["job-1", "job-2"]
             self.pending = []
+            self.prefetch_processing = ["prefetch-job"]
+            self.prefetch_pending = []
 
         async def rpoplpush(self, source: str, destination: str):
-            assert source == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
-            assert destination == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
+            if source == reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY:
+                assert destination == reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
 
-            if not self.processing:
+                if not self.processing:
+                    return None
+
+                job = self.processing.pop()
+                self.pending.insert(0, job)
+                return job
+
+            assert source == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+            assert destination == reading_audio_queue.REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+
+            if not self.prefetch_processing:
                 return None
 
-            job = self.processing.pop()
-            self.pending.insert(0, job)
+            job = self.prefetch_processing.pop()
+            self.prefetch_pending.insert(0, job)
             return job
 
     fake_redis = FakeRedis()
@@ -533,9 +648,11 @@ async def test_requeue_interrupted_redis_audio_jobs(monkeypatch) -> None:
 
     moved_count = await reading_audio_queue.requeue_interrupted_redis_audio_jobs()
 
-    assert moved_count == 2
+    assert moved_count == 3
     assert fake_redis.processing == []
     assert fake_redis.pending == ["job-1", "job-2"]
+    assert fake_redis.prefetch_processing == []
+    assert fake_redis.prefetch_pending == ["prefetch-job"]
 
 
 @pytest.mark.asyncio
@@ -570,7 +687,7 @@ async def test_export_reading_audio_enqueues_background_job(monkeypatch) -> None
         session={
             "session_id": "session-1",
             "chunks": ["one", "two"],
-            "index": 1,
+            "index": 2,
         },
     )
 
@@ -759,15 +876,20 @@ async def test_privacy_delete_marker_skips_jobs_created_before_deletion() -> Non
 
 
 @pytest.mark.asyncio
-async def test_cleanup_user_private_runtime_data_clears_session_queue_and_cache(
+async def test_cleanup_user_private_runtime_data_clears_session_and_queue(
     monkeypatch,
 ) -> None:
     async def fake_purge_queued_audio_jobs_for_user(user_id: int) -> int:
         assert user_id == 88
         return 2
 
-    def fake_clear_audio_cache() -> dict[str, int]:
-        return {"removed_files": 3, "removed_bytes": 4096}
+    def fake_delete_user_audio_cache(user_id: int) -> dict[str, int]:
+        assert user_id == 88
+        return {
+            "removed_files": 1,
+            "removed_bytes": 1024,
+            "owner_links_removed": 3,
+        }
 
     monkeypatch.setattr(
         reading_service.privacy_service,
@@ -776,8 +898,8 @@ async def test_cleanup_user_private_runtime_data_clears_session_queue_and_cache(
     )
     monkeypatch.setattr(
         reading_service.privacy_service,
-        "clear_audio_cache",
-        fake_clear_audio_cache,
+        "delete_user_audio_cache",
+        fake_delete_user_audio_cache,
     )
 
     await store.set_reading_session(
@@ -794,6 +916,7 @@ async def test_cleanup_user_private_runtime_data_clears_session_queue_and_cache(
     assert result == {
         "reading_session": 1,
         "queued_audio_jobs": 2,
-        "audio_cache_files": 3,
+        "audio_cache_files": 1,
+        "audio_cache_owner_links": 3,
     }
     assert await store.get_reading_session(88) is None

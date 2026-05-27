@@ -64,7 +64,7 @@ def reading_navigation_keyboard(
             )
         ])
 
-    if can_export_audio:
+    if can_export_audio and not has_next:
         keyboard.append([
             InlineKeyboardButton(
                 text="🎧 Один аудіофайл",

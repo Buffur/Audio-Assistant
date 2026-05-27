@@ -1,7 +1,9 @@
 # Файл: services/document_history_service.py
 
+import hashlib
 import json
 import logging
+from dataclasses import dataclass
 
 from aiogram import types
 
@@ -10,6 +12,8 @@ from database.db import (
     clear_user_document_history,
     count_user_document_history,
     delete_user_document,
+    get_latest_document_summary_by_chunks_json,
+    get_latest_document_summary_by_content_hash,
     get_user_document_by_id,
     get_user_document_history,
     set_document_summary,
@@ -20,6 +24,16 @@ logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 300
 DEFAULT_HISTORY_LIMIT = 5
+SUMMARY_CACHE_VERSION = "summary-cache-v1"
+
+
+@dataclass(frozen=True)
+class CachedDocumentSummary:
+    summary_text: str
+    summary_voice_file_ids: list[str]
+    summary_voice_voice: str | None
+    summary_voice_rate: str | None
+    summary_voice_provider: str | None
 
 
 def detect_message_source_type(message: types.Message) -> str:
@@ -61,6 +75,21 @@ def build_text_preview(text: str) -> str:
         return clean_text
 
     return clean_text[:TEXT_PREVIEW_LENGTH - 3].strip() + "..."
+
+
+def normalize_text_for_content_cache(text: str) -> str:
+    return " ".join(text.split()).strip()
+
+
+def build_content_hash(text: str) -> str | None:
+    normalized_text = normalize_text_for_content_cache(text)
+
+    if not normalized_text:
+        return None
+
+    raw_value = f"{SUMMARY_CACHE_VERSION}\n{normalized_text}"
+
+    return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
 
 
 def serialize_chunks(chunks: list[str]) -> str:
@@ -126,6 +155,7 @@ async def save_document_history_from_message(
     source_name = get_message_source_name(message)
     text_preview = build_text_preview(text)
     chunks_json = serialize_chunks(chunks)
+    content_hash = build_content_hash(text)
 
     try:
         document_id = await add_document_history(
@@ -135,7 +165,8 @@ async def save_document_history_from_message(
             text_preview=text_preview,
             text_length=len(text),
             chunks_count=len(chunks),
-            chunks_json=chunks_json
+            chunks_json=chunks_json,
+            content_hash=content_hash,
         )
 
         logger.info(
@@ -155,6 +186,59 @@ async def save_document_history_from_message(
             user_id
         )
         return None
+
+
+async def get_cached_summary_for_text(
+    user_id: int,
+    text: str,
+    chunks: list[str] | None = None,
+    exclude_document_id: int | None = None,
+) -> CachedDocumentSummary | None:
+    content_hash = build_content_hash(text)
+
+    if not content_hash and not chunks:
+        return None
+
+    try:
+        cached = None
+
+        if content_hash:
+            cached = await get_latest_document_summary_by_content_hash(
+                user_id=user_id,
+                content_hash=content_hash,
+                exclude_document_id=exclude_document_id,
+            )
+
+        if cached is None and chunks:
+            cached = await get_latest_document_summary_by_chunks_json(
+                user_id=user_id,
+                chunks_json=serialize_chunks(chunks),
+                exclude_document_id=exclude_document_id,
+            )
+    except Exception:
+        logger.exception(
+            "DocumentCatalog: не вдалося прочитати cached summary user_id=%s",
+            user_id,
+        )
+        return None
+
+    if not cached:
+        return None
+
+    summary_text = str(cached.get("summary_text") or "").strip()
+
+    if not summary_text:
+        return None
+
+    return CachedDocumentSummary(
+        summary_text=summary_text,
+        summary_voice_file_ids=deserialize_voice_file_ids(
+            cached.get("summary_voice_file_ids_json")
+        ),
+        summary_voice_voice=cached.get("summary_voice_voice"),
+        summary_voice_rate=cached.get("summary_voice_rate"),
+        summary_voice_provider=cached.get("summary_voice_provider"),
+    )
 
 
 async def get_recent_document_history(

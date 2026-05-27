@@ -26,9 +26,17 @@ logger = logging.getLogger(__name__)
 READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = 10.0
 REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = 5
 REDIS_AUDIO_QUEUE_PROCESSING_KEY = f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
+REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY = f"{READING_AUDIO_QUEUE_REDIS_KEY}:prefetch"
+REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY = (
+    f"{REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY}:processing"
+)
 DEFERRED_AUDIO_JOB_SLEEP_SECONDS = 0.05
+REDIS_PREFETCH_QUEUE_POP_TIMEOUT_SECONDS = 1
 
 AudioGenerationJob = Callable[[], Awaitable[None]]
+AudioJobType = Literal["send_chunk", "export_audio", "prefetch_chunk"]
+AudioQueuePriority = Literal["user_visible", "prefetch"]
+USER_VISIBLE_AUDIO_JOB_TYPES: set[str] = {"send_chunk", "export_audio"}
 
 
 class BaseSerializedAudioJob(TypedDict):
@@ -116,15 +124,22 @@ class AudioQueueStats:
         }
 
 _audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
+_prefetch_audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
+_memory_audio_generation_enqueue_event: asyncio.Event | None = None
 _audio_generation_worker_tasks: set[asyncio.Task] = set()
+_memory_audio_generation_pending_user_visible = 0
 _memory_audio_generation_processing = 0
-_memory_audio_generation_deferred_jobs: dict[int, deque[AudioGenerationJob]] = {}
+_memory_audio_generation_processing_user_visible = 0
+_memory_audio_generation_deferred_jobs: dict[
+    int,
+    deque[tuple[AudioGenerationJob, AudioQueuePriority]],
+] = {}
 _redis_audio_generation_worker_tasks: set[asyncio.Task] = set()
 _redis_audio_generation_stop_event: asyncio.Event | None = None
-_redis_audio_generation_active_raw_jobs: set[str] = set()
+_redis_audio_generation_active_raw_jobs: dict[str, str] = {}
 _redis_audio_generation_deferred_jobs: dict[
     int,
-    deque[tuple[str, SerializedAudioJob]],
+    deque[tuple[str, SerializedAudioJob, AudioQueuePriority]],
 ] = {}
 _redis_audio_queue_recovered = False
 _active_audio_user_ids: set[int] = set()
@@ -141,11 +156,94 @@ def _memory_audio_job_user_id(job: AudioGenerationJob) -> int | None:
     return user_id if isinstance(user_id, int) else None
 
 
+def _memory_audio_job_type(job: AudioGenerationJob) -> str | None:
+    job_type = getattr(job, "_reading_audio_job_type", None)
+
+    return job_type if isinstance(job_type, str) else None
+
+
+def _is_user_visible_audio_job_type(job_type: object) -> bool:
+    return isinstance(job_type, str) and job_type in USER_VISIBLE_AUDIO_JOB_TYPES
+
+
+def _memory_audio_job_is_user_visible(job: AudioGenerationJob) -> bool:
+    job_type = _memory_audio_job_type(job)
+
+    if job_type is None:
+        return True
+
+    return _is_user_visible_audio_job_type(job_type)
+
+
+def _audio_job_priority_from_type(job_type: object) -> AudioQueuePriority:
+    return (
+        "user_visible"
+        if _is_user_visible_audio_job_type(job_type)
+        else "prefetch"
+    )
+
+
+def _memory_audio_job_priority(job: AudioGenerationJob) -> AudioQueuePriority:
+    job_type = _memory_audio_job_type(job)
+
+    if job_type is None:
+        return "user_visible"
+
+    return _audio_job_priority_from_type(job_type)
+
+
+def _serialized_audio_job_priority(job: SerializedAudioJob) -> AudioQueuePriority:
+    return _audio_job_priority_from_type(job.get("type"))
+
+
+def _redis_pending_key_for_priority(priority: AudioQueuePriority) -> str:
+    return (
+        READING_AUDIO_QUEUE_REDIS_KEY
+        if priority == "user_visible"
+        else REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+    )
+
+
+def _redis_processing_key_for_priority(priority: AudioQueuePriority) -> str:
+    return (
+        REDIS_AUDIO_QUEUE_PROCESSING_KEY
+        if priority == "user_visible"
+        else REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+    )
+
+
+def _redis_pending_key_for_processing_key(processing_key: str) -> str:
+    return (
+        REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY
+        if processing_key == REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY
+        else READING_AUDIO_QUEUE_REDIS_KEY
+    )
+
+
 def set_audio_generation_job_user_id(
     job: AudioGenerationJob,
     user_id: int,
 ) -> AudioGenerationJob:
     setattr(job, "_reading_audio_user_id", user_id)
+    return job
+
+
+def set_audio_generation_job_type(
+    job: AudioGenerationJob,
+    job_type: AudioJobType,
+) -> AudioGenerationJob:
+    setattr(job, "_reading_audio_job_type", job_type)
+    return job
+
+
+def set_audio_generation_job_metadata(
+    job: AudioGenerationJob,
+    *,
+    user_id: int,
+    job_type: AudioJobType,
+) -> AudioGenerationJob:
+    set_audio_generation_job_user_id(job, user_id)
+    set_audio_generation_job_type(job, job_type)
     return job
 
 
@@ -156,6 +254,15 @@ def _active_user_lock() -> asyncio.Lock:
         _active_audio_user_lock = asyncio.Lock()
 
     return _active_audio_user_lock
+
+
+def _memory_audio_queue_event() -> asyncio.Event:
+    global _memory_audio_generation_enqueue_event
+
+    if _memory_audio_generation_enqueue_event is None:
+        _memory_audio_generation_enqueue_event = asyncio.Event()
+
+    return _memory_audio_generation_enqueue_event
 
 
 async def _try_reserve_audio_user(user_id: int | None) -> bool:
@@ -182,25 +289,56 @@ def _deferred_memory_jobs_count() -> int:
     return sum(len(jobs) for jobs in _memory_audio_generation_deferred_jobs.values())
 
 
-def _defer_memory_audio_job(user_id: int, job: AudioGenerationJob) -> None:
-    _memory_audio_generation_deferred_jobs.setdefault(user_id, deque()).append(job)
+def _deferred_memory_user_visible_jobs_count() -> int:
+    return sum(
+        1
+        for jobs in _memory_audio_generation_deferred_jobs.values()
+        for job, priority in jobs
+        if _memory_audio_job_is_user_visible(job)
+        and priority == "user_visible"
+    )
 
 
-async def _pop_ready_deferred_memory_audio_job() -> AudioGenerationJob | None:
+def _defer_memory_audio_job(
+    user_id: int,
+    job: AudioGenerationJob,
+    priority: AudioQueuePriority,
+) -> None:
+    _memory_audio_generation_deferred_jobs.setdefault(user_id, deque()).append(
+        (job, priority)
+    )
+
+
+async def _pop_ready_deferred_memory_audio_job(
+    priority: AudioQueuePriority,
+) -> tuple[AudioGenerationJob, AudioQueuePriority] | None:
     for user_id, jobs in list(_memory_audio_generation_deferred_jobs.items()):
         if not jobs:
             _memory_audio_generation_deferred_jobs.pop(user_id, None)
             continue
 
+        ready_index = next(
+            (
+                index
+                for index, (_job, job_priority) in enumerate(jobs)
+                if job_priority == priority
+            ),
+            None,
+        )
+
+        if ready_index is None:
+            continue
+
         if not await _try_reserve_audio_user(user_id):
             continue
 
-        job = jobs.popleft()
+        job, job_priority = jobs[ready_index]
+        del jobs[ready_index]
 
         if not jobs:
             _memory_audio_generation_deferred_jobs.pop(user_id, None)
 
-        return job
+        return job, job_priority
 
     return None
 
@@ -212,29 +350,44 @@ def _deferred_redis_jobs_count() -> int:
 def _defer_redis_audio_job(
     raw_job: str,
     job: SerializedAudioJob,
+    priority: AudioQueuePriority,
 ) -> None:
     user_id = int(job["user_id"])
     _redis_audio_generation_deferred_jobs.setdefault(user_id, deque()).append(
-        (raw_job, job)
+        (raw_job, job, priority)
     )
 
 
 async def _pop_ready_deferred_redis_audio_job(
-) -> tuple[str, SerializedAudioJob] | None:
+    priority: AudioQueuePriority,
+) -> tuple[str, SerializedAudioJob, AudioQueuePriority] | None:
     for user_id, jobs in list(_redis_audio_generation_deferred_jobs.items()):
         if not jobs:
             _redis_audio_generation_deferred_jobs.pop(user_id, None)
             continue
 
+        ready_index = next(
+            (
+                index
+                for index, (_raw_job, _job, job_priority) in enumerate(jobs)
+                if job_priority == priority
+            ),
+            None,
+        )
+
+        if ready_index is None:
+            continue
+
         if not await _try_reserve_audio_user(user_id):
             continue
 
-        raw_job, job = jobs.popleft()
+        raw_job, job, job_priority = jobs[ready_index]
+        del jobs[ready_index]
 
         if not jobs:
             _redis_audio_generation_deferred_jobs.pop(user_id, None)
 
-        return raw_job, job
+        return raw_job, job, job_priority
 
     return None
 
@@ -243,22 +396,23 @@ async def _audio_generation_worker(
     queue: asyncio.Queue[AudioGenerationJob],
 ) -> None:
     global _memory_audio_generation_processing
+    global _memory_audio_generation_pending_user_visible
+    global _memory_audio_generation_processing_user_visible
 
     while True:
-        job = await _pop_ready_deferred_memory_audio_job()
+        job_result = await _pop_next_memory_audio_job(queue)
 
-        if job is None:
-            job = await queue.get()
-            user_id = _memory_audio_job_user_id(job)
+        if job_result is None:
+            await _memory_audio_queue_event().wait()
+            _memory_audio_queue_event().clear()
+            continue
 
-            if not await _try_reserve_audio_user(user_id):
-                if user_id is not None:
-                    _defer_memory_audio_job(user_id, job)
-                    await asyncio.sleep(DEFERRED_AUDIO_JOB_SLEEP_SECONDS)
-                    continue
-
+        job, priority = job_result
         user_id = _memory_audio_job_user_id(job)
+        is_user_visible_job = priority == "user_visible"
         _memory_audio_generation_processing += 1
+        if is_user_visible_job:
+            _memory_audio_generation_processing_user_visible += 1
 
         try:
             await job()
@@ -271,8 +425,58 @@ async def _audio_generation_worker(
                 _memory_audio_generation_processing - 1,
                 0,
             )
+            if is_user_visible_job:
+                _memory_audio_generation_processing_user_visible = max(
+                    _memory_audio_generation_processing_user_visible - 1,
+                    0,
+                )
             await _release_audio_user(user_id)
-            queue.task_done()
+            if priority == "prefetch" and _prefetch_audio_generation_queue is not None:
+                _prefetch_audio_generation_queue.task_done()
+            else:
+                queue.task_done()
+
+
+async def _pop_next_memory_audio_job(
+    queue: asyncio.Queue[AudioGenerationJob],
+) -> tuple[AudioGenerationJob, AudioQueuePriority] | None:
+    prefetch_queue = _prefetch_audio_generation_queue
+
+    for priority in ("user_visible", "prefetch"):
+        deferred_job = await _pop_ready_deferred_memory_audio_job(priority)
+
+        if deferred_job is not None:
+            return deferred_job
+
+        source_queue = queue if priority == "user_visible" else prefetch_queue
+
+        if source_queue is None:
+            continue
+
+        while True:
+            try:
+                job = source_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            if priority == "user_visible":
+                global _memory_audio_generation_pending_user_visible
+                _memory_audio_generation_pending_user_visible = max(
+                    _memory_audio_generation_pending_user_visible - 1,
+                    0,
+                )
+
+            user_id = _memory_audio_job_user_id(job)
+
+            if not await _try_reserve_audio_user(user_id):
+                if user_id is not None:
+                    _defer_memory_audio_job(user_id, job, priority)
+                    await asyncio.sleep(DEFERRED_AUDIO_JOB_SLEEP_SECONDS)
+                    continue
+
+            return job, priority
+
+    return None
 
 
 def use_redis_audio_queue() -> bool:
@@ -474,9 +678,11 @@ async def purge_queued_audio_jobs_for_user(user_id: int) -> int:
 
             return removed
             """,
-            2,
+            4,
             READING_AUDIO_QUEUE_REDIS_KEY,
             REDIS_AUDIO_QUEUE_PROCESSING_KEY,
+            REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY,
+            REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY,
             str(user_id),
         )
 
@@ -499,16 +705,23 @@ async def requeue_interrupted_redis_audio_jobs() -> int:
     client = await get_redis_client()
     moved_count = 0
 
-    while True:
-        raw_job = await client.rpoplpush(
-            REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-            READING_AUDIO_QUEUE_REDIS_KEY,
-        )
+    for processing_key, pending_key in (
+        (REDIS_AUDIO_QUEUE_PROCESSING_KEY, READING_AUDIO_QUEUE_REDIS_KEY),
+        (
+            REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY,
+            REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY,
+        ),
+    ):
+        while True:
+            raw_job = await client.rpoplpush(
+                processing_key,
+                pending_key,
+            )
 
-        if raw_job is None:
-            break
+            if raw_job is None:
+                break
 
-        moved_count += 1
+            moved_count += 1
 
     _redis_audio_queue_recovered = True
 
@@ -521,12 +734,17 @@ async def requeue_interrupted_redis_audio_jobs() -> int:
     return moved_count
 
 
-async def _ack_redis_audio_job(raw_job: str) -> None:
+async def _ack_redis_audio_job(raw_job: str, processing_key: str) -> None:
     client = await get_redis_client()
-    await client.lrem(REDIS_AUDIO_QUEUE_PROCESSING_KEY, 1, raw_job)
+    await client.lrem(processing_key, 1, raw_job)
 
 
-async def _requeue_redis_audio_job(raw_job: str) -> int:
+async def _requeue_redis_audio_job(
+    raw_job: str,
+    *,
+    processing_key: str,
+    pending_key: str,
+) -> int:
     client = await get_redis_client()
     moved_count = await client.eval(
         """
@@ -539,24 +757,24 @@ async def _requeue_redis_audio_job(raw_job: str) -> int:
         return removed
         """,
         2,
-        REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-        READING_AUDIO_QUEUE_REDIS_KEY,
+        processing_key,
+        pending_key,
         raw_job,
     )
 
     return int(moved_count or 0)
 
 
-def _set_active_redis_audio_job(raw_job: str) -> None:
-    _redis_audio_generation_active_raw_jobs.add(raw_job)
+def _set_active_redis_audio_job(raw_job: str, processing_key: str) -> None:
+    _redis_audio_generation_active_raw_jobs[raw_job] = processing_key
 
 
 def _clear_active_redis_audio_job(raw_job: str) -> None:
-    _redis_audio_generation_active_raw_jobs.discard(raw_job)
+    _redis_audio_generation_active_raw_jobs.pop(raw_job, None)
 
 
 async def _requeue_active_redis_audio_job() -> int:
-    raw_jobs = list(_redis_audio_generation_active_raw_jobs)
+    raw_jobs = list(_redis_audio_generation_active_raw_jobs.items())
 
     if not raw_jobs:
         return 0
@@ -564,8 +782,13 @@ async def _requeue_active_redis_audio_job() -> int:
     requeued_count = 0
 
     try:
-        for raw_job in raw_jobs:
-            moved_count = await _requeue_redis_audio_job(raw_job)
+        for raw_job, processing_key in raw_jobs:
+            pending_key = _redis_pending_key_for_processing_key(processing_key)
+            moved_count = await _requeue_redis_audio_job(
+                raw_job,
+                processing_key=processing_key,
+                pending_key=pending_key,
+            )
             requeued_count += moved_count
 
             if not moved_count:
@@ -595,6 +818,78 @@ async def _requeue_active_redis_audio_job() -> int:
         _redis_audio_generation_deferred_jobs.clear()
 
 
+async def _pop_redis_audio_job_from_queue(
+    client,
+    priority: AudioQueuePriority,
+    *,
+    timeout: int,
+) -> tuple[str, SerializedAudioJob, AudioQueuePriority, str, bool] | None:
+    pending_key = _redis_pending_key_for_priority(priority)
+    processing_key = _redis_processing_key_for_priority(priority)
+
+    raw_job = await client.brpoplpush(
+        pending_key,
+        processing_key,
+        timeout=timeout,
+    )
+
+    if raw_job is None:
+        return None
+
+    _set_active_redis_audio_job(raw_job, processing_key)
+
+    try:
+        job = validate_audio_job(json.loads(raw_job))
+    except InvalidAudioJobError as error:
+        logger.warning(
+            "ReadingAudioQueue: invalid Redis job skipped: %s",
+            error,
+        )
+        await _ack_redis_audio_job(raw_job, processing_key)
+        _clear_active_redis_audio_job(raw_job)
+        return None
+
+    return raw_job, job, priority, processing_key, False
+
+
+async def _pop_next_redis_audio_job(
+    client,
+) -> tuple[str, SerializedAudioJob, AudioQueuePriority, str, bool] | None:
+    deferred_user_visible = await _pop_ready_deferred_redis_audio_job("user_visible")
+
+    if deferred_user_visible is not None:
+        raw_job, job, job_priority = deferred_user_visible
+        processing_key = _redis_processing_key_for_priority(job_priority)
+        return raw_job, job, job_priority, processing_key, True
+
+    user_visible_job = await _pop_redis_audio_job_from_queue(
+        client,
+        "user_visible",
+        timeout=REDIS_PREFETCH_QUEUE_POP_TIMEOUT_SECONDS,
+    )
+
+    if user_visible_job is not None:
+        return user_visible_job
+
+    deferred_prefetch = await _pop_ready_deferred_redis_audio_job("prefetch")
+
+    if deferred_prefetch is not None:
+        raw_job, job, priority = deferred_prefetch
+        return (
+            raw_job,
+            job,
+            priority,
+            _redis_processing_key_for_priority(priority),
+            True,
+        )
+
+    return await _pop_redis_audio_job_from_queue(
+        client,
+        "prefetch",
+        timeout=REDIS_PREFETCH_QUEUE_POP_TIMEOUT_SECONDS,
+    )
+
+
 async def _redis_audio_generation_worker(
     job_handler: SerializedAudioJobHandler,
     stop_event: asyncio.Event,
@@ -605,59 +900,46 @@ async def _redis_audio_generation_worker(
         while not stop_event.is_set():
             raw_job = None
             reserved_user_id: int | None = None
+            processing_key: str | None = None
 
             try:
-                deferred_job = await _pop_ready_deferred_redis_audio_job()
+                client = await get_redis_client()
+                next_job = await _pop_next_redis_audio_job(client)
 
-                if deferred_job is not None:
-                    raw_job, job = deferred_job
-                    reserved_user_id = int(job["user_id"])
-                else:
-                    client = await get_redis_client()
-                    raw_job = await client.brpoplpush(
-                        READING_AUDIO_QUEUE_REDIS_KEY,
-                        REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-                        timeout=REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS,
-                    )
+                if next_job is None:
+                    continue
 
-                    if raw_job is None:
-                        continue
+                raw_job, job, priority, processing_key, user_already_reserved = next_job
 
-                    _set_active_redis_audio_job(raw_job)
-
-                    if stop_event.is_set():
-                        try:
-                            await _requeue_redis_audio_job(raw_job)
-                            _clear_active_redis_audio_job(raw_job)
-                        except RedisError:
-                            logger.exception(
-                                "ReadingAudioQueue: failed to requeue Redis job "
-                                "after shutdown signal",
-                            )
-                        break
-
+                if stop_event.is_set():
                     try:
-                        job = validate_audio_job(json.loads(raw_job))
-                    except InvalidAudioJobError as error:
-                        logger.warning(
-                            "ReadingAudioQueue: invalid Redis job skipped: %s",
-                            error,
+                        await _requeue_redis_audio_job(
+                            raw_job,
+                            processing_key=processing_key,
+                            pending_key=_redis_pending_key_for_priority(priority),
                         )
-                        await _ack_redis_audio_job(raw_job)
                         _clear_active_redis_audio_job(raw_job)
-                        continue
+                    except RedisError:
+                        logger.exception(
+                            "ReadingAudioQueue: failed to requeue Redis job "
+                            "after shutdown signal",
+                        )
+                    break
 
-                    user_id = int(job["user_id"])
+                user_id = int(job["user_id"])
 
+                if user_already_reserved:
+                    reserved_user_id = user_id
+                else:
                     if not await _try_reserve_audio_user(user_id):
-                        _defer_redis_audio_job(raw_job, job)
+                        _defer_redis_audio_job(raw_job, job, priority)
                         await asyncio.sleep(DEFERRED_AUDIO_JOB_SLEEP_SECONDS)
                         continue
 
                     reserved_user_id = user_id
 
                 await job_handler(bot, job)
-                await _ack_redis_audio_job(raw_job)
+                await _ack_redis_audio_job(raw_job, processing_key)
                 _clear_active_redis_audio_job(raw_job)
                 await _release_audio_user(reserved_user_id)
                 reserved_user_id = None
@@ -668,18 +950,18 @@ async def _redis_audio_generation_worker(
 
             except (RedisError, json.JSONDecodeError, KeyError, ValueError):
                 logger.exception("ReadingAudioQueue: Redis worker job failed")
-                if raw_job is not None:
+                if raw_job is not None and processing_key is not None:
                     with suppress(RedisError):
-                        await _ack_redis_audio_job(raw_job)
+                        await _ack_redis_audio_job(raw_job, processing_key)
                     _clear_active_redis_audio_job(raw_job)
                 await _release_audio_user(reserved_user_id)
                 await asyncio.sleep(1)
 
             except Exception:
                 logger.exception("ReadingAudioQueue: Redis audio job failed")
-                if raw_job is not None:
+                if raw_job is not None and processing_key is not None:
                     with suppress(RedisError):
-                        await _ack_redis_audio_job(raw_job)
+                        await _ack_redis_audio_job(raw_job, processing_key)
                     _clear_active_redis_audio_job(raw_job)
                 await _release_audio_user(reserved_user_id)
 
@@ -719,14 +1001,50 @@ def _ensure_redis_audio_generation_worker(
 
 async def redis_audio_queue_position() -> int:
     client = await get_redis_client()
-    pending, processing = await _redis_audio_queue_load(client)
-    return pending + processing + 1
+    user_visible_jobs = await _redis_audio_queue_user_visible_load(client)
+    return user_visible_jobs + 1
 
 
 async def _redis_audio_queue_load(client) -> tuple[int, int]:
-    pending = int(await client.llen(READING_AUDIO_QUEUE_REDIS_KEY))
-    processing = int(await client.llen(REDIS_AUDIO_QUEUE_PROCESSING_KEY))
+    pending = int(await client.llen(READING_AUDIO_QUEUE_REDIS_KEY)) + int(
+        await client.llen(REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY)
+    )
+    processing = int(await client.llen(REDIS_AUDIO_QUEUE_PROCESSING_KEY)) + int(
+        await client.llen(REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY)
+    )
     return pending, processing
+
+
+async def _redis_audio_queue_user_visible_load(client) -> int:
+    count = await client.eval(
+        """
+        local visible = 0
+
+        for key_index = 1, #KEYS do
+            local key = KEYS[key_index]
+            local items = redis.call("LRANGE", key, 0, -1)
+
+            for _, item in ipairs(items) do
+                local ok, job = pcall(cjson.decode, item)
+
+                if ok then
+                    local job_type = tostring(job["type"])
+
+                    if job_type == "send_chunk" or job_type == "export_audio" then
+                        visible = visible + 1
+                    end
+                end
+            end
+        end
+
+        return visible
+        """,
+        2,
+        READING_AUDIO_QUEUE_REDIS_KEY,
+        REDIS_AUDIO_QUEUE_PROCESSING_KEY,
+    )
+
+    return int(count or 0)
 
 
 async def get_audio_queue_stats() -> AudioQueueStats:
@@ -755,12 +1073,14 @@ async def get_audio_queue_stats() -> AudioQueueStats:
             )
 
     queue = _audio_generation_queue
+    prefetch_queue = _prefetch_audio_generation_queue
 
     return AudioQueueStats(
         backend="memory",
         max_size=READING_AUDIO_QUEUE_MAX_SIZE,
         pending=(
             (queue.qsize() if queue is not None else 0)
+            + (prefetch_queue.qsize() if prefetch_queue is not None else 0)
             + _deferred_memory_jobs_count()
         ),
         processing=_memory_audio_generation_processing,
@@ -774,25 +1094,30 @@ async def enqueue_redis_audio_job(
 ) -> None:
     validated_job = validate_audio_job(job)
     payload = serialize_audio_job(validated_job)
+    priority = _serialized_audio_job_priority(validated_job)
+    pending_key = _redis_pending_key_for_priority(priority)
 
     await start_audio_workers(job_handler)
     client = await get_redis_client()
     accepted = await client.eval(
         """
-        local pending = redis.call("LLEN", KEYS[1])
-        local processing = redis.call("LLEN", KEYS[2])
+        local pending = redis.call("LLEN", KEYS[1]) + redis.call("LLEN", KEYS[3])
+        local processing = redis.call("LLEN", KEYS[2]) + redis.call("LLEN", KEYS[4])
         local max_size = tonumber(ARGV[1])
 
         if pending + processing >= max_size then
             return 0
         end
 
-        redis.call("LPUSH", KEYS[1], ARGV[2])
+        redis.call("LPUSH", KEYS[5], ARGV[2])
         return 1
         """,
-        2,
+        5,
         READING_AUDIO_QUEUE_REDIS_KEY,
         REDIS_AUDIO_QUEUE_PROCESSING_KEY,
+        REDIS_PREFETCH_AUDIO_QUEUE_REDIS_KEY,
+        REDIS_PREFETCH_AUDIO_QUEUE_PROCESSING_KEY,
+        pending_key,
         str(READING_AUDIO_QUEUE_MAX_SIZE),
         payload,
     )
@@ -803,9 +1128,15 @@ async def enqueue_redis_audio_job(
 
 def ensure_memory_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
     global _audio_generation_queue
+    global _prefetch_audio_generation_queue
 
     if _audio_generation_queue is None:
         _audio_generation_queue = asyncio.Queue(
+            maxsize=READING_AUDIO_QUEUE_MAX_SIZE,
+        )
+
+    if _prefetch_audio_generation_queue is None:
+        _prefetch_audio_generation_queue = asyncio.Queue(
             maxsize=READING_AUDIO_QUEUE_MAX_SIZE,
         )
 
@@ -823,20 +1154,25 @@ def ensure_memory_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
 
 
 def memory_audio_queue_position() -> int:
-    queue = ensure_memory_audio_generation_queue()
+    ensure_memory_audio_generation_queue()
     return (
-        queue.qsize()
-        + _deferred_memory_jobs_count()
-        + _memory_audio_generation_processing
+        _memory_audio_generation_pending_user_visible
+        + _deferred_memory_user_visible_jobs_count()
+        + _memory_audio_generation_processing_user_visible
         + 1
     )
 
 
 def enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
+    global _memory_audio_generation_pending_user_visible
+
     queue = ensure_memory_audio_generation_queue()
+    prefetch_queue = _prefetch_audio_generation_queue
+    priority = _memory_audio_job_priority(job)
 
     active_jobs = (
         queue.qsize()
+        + (prefetch_queue.qsize() if prefetch_queue is not None else 0)
         + _deferred_memory_jobs_count()
         + _memory_audio_generation_processing
     )
@@ -844,25 +1180,52 @@ def enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
     if active_jobs >= READING_AUDIO_QUEUE_MAX_SIZE:
         raise asyncio.QueueFull
 
-    queue.put_nowait(job)
+    target_queue = queue if priority == "user_visible" else prefetch_queue
+
+    if target_queue is None:
+        raise RuntimeError("Memory audio prefetch queue is not initialized")
+
+    target_queue.put_nowait(job)
+    _memory_audio_queue_event().set()
+
+    if priority == "user_visible":
+        _memory_audio_generation_pending_user_visible += 1
 
 
 async def close_audio_queue(
     timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
 ) -> None:
     global _audio_generation_queue
+    global _prefetch_audio_generation_queue
+    global _memory_audio_generation_enqueue_event
+    global _memory_audio_generation_pending_user_visible
     global _memory_audio_generation_processing
+    global _memory_audio_generation_processing_user_visible
     global _redis_audio_generation_stop_event
     global _redis_audio_queue_recovered
 
+    current_loop = asyncio.get_running_loop()
     queue = _audio_generation_queue
-    worker_tasks = list(_audio_generation_worker_tasks)
-    redis_worker_tasks = list(_redis_audio_generation_worker_tasks)
+    prefetch_queue = _prefetch_audio_generation_queue
+    worker_tasks = [
+        task
+        for task in _audio_generation_worker_tasks
+        if task.get_loop() is current_loop
+    ]
+    redis_worker_tasks = [
+        task
+        for task in _redis_audio_generation_worker_tasks
+        if task.get_loop() is current_loop
+    ]
     redis_stop_event = _redis_audio_generation_stop_event
 
     if queue is not None:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
+
+    if prefetch_queue is not None:
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(prefetch_queue.join(), timeout=timeout_seconds)
 
     for worker_task in worker_tasks:
         if not worker_task.done():
@@ -873,8 +1236,12 @@ async def close_audio_queue(
             await worker_task
 
     _audio_generation_queue = None
+    _prefetch_audio_generation_queue = None
     _audio_generation_worker_tasks.clear()
+    _memory_audio_generation_enqueue_event = None
+    _memory_audio_generation_pending_user_visible = 0
     _memory_audio_generation_processing = 0
+    _memory_audio_generation_processing_user_visible = 0
     _memory_audio_generation_deferred_jobs.clear()
 
     if redis_worker_tasks:

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from handlers import messages
@@ -60,6 +62,10 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
             "user_id": user_id,
         }
 
+    async def fake_get_cached_summary_for_text(**kwargs):
+        captured["summary_lookup"] = kwargs
+        return None
+
     monkeypatch.setattr(messages, "cleanup_session", fake_cleanup_session)
     monkeypatch.setattr(
         messages,
@@ -80,6 +86,11 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
     monkeypatch.setattr(messages, "start_reading_session", fake_start_reading_session)
     monkeypatch.setattr(messages, "send_audio_chunk", fake_send_audio_chunk)
     monkeypatch.setattr(messages, "reply_with_voice", fake_reply_with_voice)
+    monkeypatch.setattr(
+        messages,
+        "get_cached_summary_for_text",
+        fake_get_cached_summary_for_text,
+    )
 
     await messages._process_message(message, user_id=123)
 
@@ -92,6 +103,94 @@ async def test_large_text_split_notice_is_not_voiced(monkeypatch) -> None:
     assert captured["session"]["catalog_document_id"] == 77
     assert captured["session"]["chunks"] == ["part 1", "part 2"]
     assert captured["session"]["cleanup_existing"] is False
+    assert captured["summary_lookup"] == {
+        "user_id": 123,
+        "text": "large article",
+        "chunks": ["part 1", "part 2"],
+        "exclude_document_id": 77,
+    }
+    assert captured["send_audio"] == {
+        "message": message,
+        "user_id": 123,
+    }
+
+
+@pytest.mark.asyncio
+async def test_repeated_text_bootstraps_session_with_cached_summary(
+    monkeypatch,
+) -> None:
+    message = FakeMessage()
+    captured = {}
+
+    async def fake_cleanup_session(user_id):
+        captured["cleanup_user_id"] = user_id
+
+    async def fake_extract_text_from_message(**kwargs):
+        return "same article"
+
+    async def fake_reserve_input_processing(user_id, usage_type):
+        return True
+
+    async def fake_save_document_history_from_message(**kwargs):
+        return 88
+
+    async def fake_get_cached_summary_for_text(**kwargs):
+        captured["summary_lookup"] = kwargs
+        return SimpleNamespace(
+            summary_text="Cached summary",
+            summary_voice_file_ids=["summary-voice-id"],
+            summary_voice_voice="uk-UA-PolinaNeural",
+            summary_voice_rate="+0%",
+            summary_voice_provider="edge",
+        )
+
+    async def fake_start_reading_session(**kwargs):
+        captured["session"] = kwargs
+
+    async def fake_send_audio_chunk(message_arg, user_id):
+        captured["send_audio"] = {
+            "message": message_arg,
+            "user_id": user_id,
+        }
+
+    monkeypatch.setattr(messages, "cleanup_session", fake_cleanup_session)
+    monkeypatch.setattr(
+        messages,
+        "reserve_input_processing",
+        fake_reserve_input_processing,
+    )
+    monkeypatch.setattr(
+        messages,
+        "extract_text_from_message",
+        fake_extract_text_from_message,
+    )
+    monkeypatch.setattr(messages, "split_text", lambda text: ["same article"])
+    monkeypatch.setattr(
+        messages,
+        "save_document_history_from_message",
+        fake_save_document_history_from_message,
+    )
+    monkeypatch.setattr(
+        messages,
+        "get_cached_summary_for_text",
+        fake_get_cached_summary_for_text,
+    )
+    monkeypatch.setattr(messages, "start_reading_session", fake_start_reading_session)
+    monkeypatch.setattr(messages, "send_audio_chunk", fake_send_audio_chunk)
+
+    await messages._process_message(message, user_id=123)
+
+    assert captured["summary_lookup"] == {
+        "user_id": 123,
+        "text": "same article",
+        "chunks": ["same article"],
+        "exclude_document_id": 88,
+    }
+    assert captured["session"]["summary_text"] == "Cached summary"
+    assert captured["session"]["summary_voice_file_ids"] == ["summary-voice-id"]
+    assert captured["session"]["summary_voice_voice"] == "uk-UA-PolinaNeural"
+    assert captured["session"]["summary_voice_rate"] == "+0%"
+    assert captured["session"]["summary_voice_provider"] == "edge"
     assert captured["send_audio"] == {
         "message": message,
         "user_id": 123,

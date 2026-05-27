@@ -109,8 +109,13 @@ def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
         has_next=True,
         session_id="session-1",
     )
-    premium_keyboard = reading_keyboard.reading_navigation_keyboard(
+    early_premium_keyboard = reading_keyboard.reading_navigation_keyboard(
         has_next=True,
+        session_id="session-1",
+        can_export_audio=True,
+    )
+    completed_premium_keyboard = reading_keyboard.reading_navigation_keyboard(
+        has_next=False,
         session_id="session-1",
         can_export_audio=True,
     )
@@ -120,9 +125,14 @@ def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
         for row in basic_keyboard.inline_keyboard
         for button in row
     ]
-    premium_callbacks = [
+    early_premium_callbacks = [
         button.callback_data
-        for row in premium_keyboard.inline_keyboard
+        for row in early_premium_keyboard.inline_keyboard
+        for button in row
+    ]
+    completed_premium_callbacks = [
+        button.callback_data
+        for row in completed_premium_keyboard.inline_keyboard
         for button in row
     ]
     export_callback = reading_keyboard.build_reading_callback(
@@ -131,7 +141,8 @@ def test_reading_keyboard_adds_export_button_only_when_allowed() -> None:
     )
 
     assert export_callback not in basic_callbacks
-    assert export_callback in premium_callbacks
+    assert export_callback not in early_premium_callbacks
+    assert export_callback in completed_premium_callbacks
 
 
 def test_reading_keyboard_can_hide_summary_button_after_summary_generated() -> None:
@@ -425,8 +436,8 @@ def test_delete_my_data_confirmation_keyboard_and_text() -> None:
     assert privacy_keyboard.parse_delete_my_data_callback_user_id(cancel_callback) == 123
     assert "Підтвердьте очищення даних" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
     assert "історію документів" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
-    assert "Денні лічильники використання" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
-    assert "не видаляються" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
+    assert "Цю дію не можна скасувати" in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
+    assert "Денні лічильники використання" not in privacy_texts.DELETE_MY_DATA_CONFIRM_TEXT
 
 
 def test_catalog_reading_session_restores_cached_summary() -> None:

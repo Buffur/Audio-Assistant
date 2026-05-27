@@ -35,7 +35,6 @@ async def test_delete_my_data_invalidates_user_activity_cache(monkeypatch) -> No
         return {
             "reading_session": 0,
             "queued_audio_jobs": 0,
-            "audio_cache_files": 0,
         }
 
     async def fake_delete_user_private_data(user_id: int) -> dict[str, int]:
@@ -74,4 +73,8 @@ async def test_delete_my_data_invalidates_user_activity_cache(monkeypatch) -> No
         "invalidated_user_id": 123,
     }
     assert callback.message.edits
+    rendered_text = str(callback.message.edits[0]["text"])
+    assert "Файли кешу озвучки" not in rendered_text
+    assert "Денні лічильники" not in rendered_text
+    assert "Історія документів:" not in rendered_text
     assert callback.answers

@@ -12,7 +12,11 @@ from services.reading.application.queue_orchestrator import (
 )
 from services.reading.audio_queue import AudioQueueStats
 from services.reading.infrastructure import session_store
-from texts.messages import EXPORT_AUDIO_CAPTION_TEXT, EXPORT_AUDIO_GENERATION_ERROR
+from texts.messages import (
+    EXPORT_AUDIO_CAPTION_TEXT,
+    EXPORT_AUDIO_GENERATION_ERROR,
+    EXPORT_AUDIO_NOT_READY_TEXT,
+)
 
 
 class FakeStatusMessage:
@@ -93,7 +97,7 @@ async def test_export_reading_audio_uses_injected_memory_runner() -> None:
         session={
             "session_id": "session-1",
             "chunks": ["one", "two"],
-            "index": 0,
+            "index": 2,
         },
     )
 
@@ -165,7 +169,7 @@ async def test_export_reading_audio_reports_redis_failure_without_memory_fallbac
         session={
             "session_id": "session-redis",
             "chunks": ["one", "two"],
-            "index": 0,
+            "index": 2,
         },
     )
 
@@ -260,7 +264,7 @@ async def test_export_reading_audio_now_generates_combines_and_sends(
         session={
             "session_id": "session-export",
             "chunks": ["one", "two"],
-            "index": 0,
+            "index": 2,
             "is_generating": True,
         },
     )
@@ -286,8 +290,67 @@ async def test_export_reading_audio_now_generates_combines_and_sends(
     assert session is not None
     assert session["is_generating"] is False
     assert captured["concat"]["audio_files"] == [str(path) for path in generated_paths]
+    assert captured["concat"]["smooth"] is False
     assert captured["send"]["audio_files"] == [str(combined_path)]
     assert captured["send"]["caption"] == EXPORT_AUDIO_CAPTION_TEXT
     assert captured["finish"] == (3, "session-export")
     assert status_msg.deleted is True
     assert all(not path.exists() for path in generated_paths)
+
+
+@pytest.mark.asyncio
+async def test_export_reading_audio_rejects_before_last_part() -> None:
+    captured = {}
+
+    async def cleanup_session(user_id: int) -> None:
+        captured["cleanup"] = user_id
+
+    async def finish_generation_if_session(
+        user_id: int,
+        session_id: str | None,
+    ) -> None:
+        captured["finish"] = (user_id, session_id)
+
+    async def redis_audio_queue_position() -> int:
+        raise AssertionError("not-ready export must not inspect queue position")
+
+    async def enqueue_redis_audio_job(job) -> None:
+        raise AssertionError("not-ready export must not enqueue Redis job")
+
+    def enqueue_memory_audio_job(job) -> None:
+        raise AssertionError("not-ready export must not enqueue memory job")
+
+    async def get_queue_stats() -> AudioQueueStats:
+        raise AssertionError("not-ready export must not inspect queue stats")
+
+    async def export_reading_audio_now(command: ExportReadingAudioNowCommand) -> None:
+        raise AssertionError("not-ready export must not run generation")
+
+    await session_store.set_reading_session(
+        user_id=4,
+        session={
+            "session_id": "session-not-ready",
+            "chunks": ["one", "two", "three"],
+            "index": 1,
+        },
+    )
+
+    message = FakeMessage()
+
+    await export_audio_service.export_reading_audio(
+        ExportReadingAudioCommand(message=message, user_id=4),
+        cleanup_session=cleanup_session,
+        finish_generation_if_session=finish_generation_if_session,
+        queue_orchestrator=ReadingAudioQueueOrchestrator(
+            use_redis_audio_queue=lambda: False,
+            redis_audio_queue_position=redis_audio_queue_position,
+            enqueue_redis_audio_job=enqueue_redis_audio_job,
+            memory_audio_queue_position=lambda: 1,
+            enqueue_memory_audio_job=enqueue_memory_audio_job,
+            get_queue_stats=get_queue_stats,
+        ),
+        export_reading_audio_now=export_reading_audio_now,
+    )
+
+    assert message.answers == [EXPORT_AUDIO_NOT_READY_TEXT]
+    assert captured == {}
