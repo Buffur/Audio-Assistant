@@ -1,6 +1,5 @@
 # Файл: services/ocr.py
 
-import asyncio
 import logging
 import os
 import re
@@ -8,8 +7,19 @@ import re
 import PIL.Image
 from google.genai import types
 
-from config import GEMINI_OCR_MODEL, GEMINI_OCR_MODEL_CHAIN, OCR_MIN_TEXT_LENGTH
+from config import (
+    GEMINI_OCR_MODEL,
+    GEMINI_OCR_MODEL_CHAIN,
+    OCR_IMAGE_OPEN_TIMEOUT_SECONDS,
+    OCR_MIN_TEXT_LENGTH,
+    OCR_TOTAL_TIMEOUT_SECONDS,
+)
 from services.gemini_client import generate_gemini_content_with_fallback
+from services.operation_timeouts import (
+    OperationTimeoutError,
+    run_sync_with_timeout,
+    run_with_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +28,10 @@ OCR_MODEL_CHAIN = GEMINI_OCR_MODEL_CHAIN
 OCR_NO_TEXT_MESSAGE = "❌ На цьому фото не знайдено тексту."
 OCR_GENERIC_ERROR_MESSAGE = (
     "❌ Помилка розпізнавання тексту з фотографії. Спробуйте ще раз."
+)
+OCR_TIMEOUT_MESSAGE = (
+    "❌ Розпізнавання тексту зайняло занадто багато часу. "
+    "Спробуйте менше або чіткіше зображення."
 )
 
 # Захист від надто великих зображень.
@@ -125,9 +139,27 @@ async def extract_text_from_image(image_path: str) -> str:
     try:
         # Виконуємо синхронний I/O-код PIL в окремому потоці,
         # щоб не блокувати event loop.
-        image = await asyncio.to_thread(_open_image, image_path)
+        image = await run_sync_with_timeout(
+            _open_image,
+            image_path,
+            operation="ocr_image_open",
+            timeout_seconds=OCR_IMAGE_OPEN_TIMEOUT_SECONDS,
+        )
 
-        return await _extract_text_with_providers(image_path, image)
+        return await run_with_timeout(
+            _extract_text_with_providers(image_path, image),
+            operation="ocr_total",
+            timeout_seconds=OCR_TOTAL_TIMEOUT_SECONDS,
+        )
+
+    except OperationTimeoutError as error:
+        logger.warning(
+            "OCR: timeout for image=%s operation=%s timeout=%s",
+            image_path,
+            error.operation,
+            error.timeout_seconds,
+        )
+        return OCR_TIMEOUT_MESSAGE
 
     except PIL.Image.DecompressionBombError:
         logger.exception(

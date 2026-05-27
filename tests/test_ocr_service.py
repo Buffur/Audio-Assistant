@@ -1,4 +1,5 @@
 import pytest
+import time
 from PIL import Image
 
 from services import ocr
@@ -71,3 +72,24 @@ async def test_extract_text_with_providers_returns_no_text_when_gemini_fails(
         image.close()
 
     assert result == ocr.OCR_NO_TEXT_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_extract_text_from_image_times_out_image_open(
+    monkeypatch,
+    workspace_tmp_path,
+) -> None:
+    image_path = workspace_tmp_path / "photo.png"
+    image_path.write_bytes(b"not actually opened")
+
+    monkeypatch.setattr(ocr, "OCR_IMAGE_OPEN_TIMEOUT_SECONDS", 0.01)
+
+    def slow_open(path: str):
+        time.sleep(0.05)
+        return Image.new("RGB", (10, 10), "white")
+
+    monkeypatch.setattr(ocr, "_open_image", slow_open)
+
+    result = await ocr.extract_text_from_image(str(image_path))
+
+    assert result == ocr.OCR_TIMEOUT_MESSAGE

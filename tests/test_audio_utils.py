@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import pytest
 
@@ -167,3 +168,23 @@ async def test_concat_ogg_files_reencodes_when_stream_copy_fails(
     assert "libopus" in commands[1]
 
     Path(result).unlink()
+
+
+@pytest.mark.asyncio
+async def test_concat_ogg_files_single_copy_is_bounded(
+    workspace_tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_one = workspace_tmp_path / "one.ogg"
+    input_one.write_bytes(b"one")
+
+    def slow_copyfile(source, destination):
+        time.sleep(0.05)
+        return destination
+
+    monkeypatch.setattr(audio, "is_ffmpeg_available", lambda: True)
+    monkeypatch.setattr(audio, "FFMPEG_CONCAT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(audio.shutil, "copyfile", slow_copyfile)
+
+    with pytest.raises(RuntimeError, match="single audio copy took longer"):
+        await audio.concat_ogg_files([str(input_one)])

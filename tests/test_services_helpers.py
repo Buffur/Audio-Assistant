@@ -1,4 +1,6 @@
+import asyncio
 from pathlib import Path
+import time
 
 import pytest
 
@@ -9,6 +11,7 @@ from services import parser
 from services import redis_client
 from services import user_settings_service
 from services import voice_selector
+from services.operation_timeouts import OperationTimeoutError
 
 
 def test_process_txt_supports_utf8_sig(workspace_tmp_path: Path) -> None:
@@ -56,6 +59,89 @@ def test_process_pdf_stops_at_soft_limit(monkeypatch) -> None:
     assert fake_document.first_page.calls == 1
     assert fake_document.second_page.calls == 0
     assert fake_document.closed is True
+
+
+@pytest.mark.asyncio
+async def test_document_processor_timeout_is_explicit(monkeypatch) -> None:
+    monkeypatch.setattr(content_extractor, "DOCX_EXTRACTION_TIMEOUT_SECONDS", 0.01)
+
+    def slow_processor(file_path: str) -> str:
+        time.sleep(0.05)
+        return "too late"
+
+    with pytest.raises(OperationTimeoutError) as error:
+        await content_extractor._run_document_processor(
+            slow_processor,
+            "fake.docx",
+            document_kind=content_extractor.DOCUMENT_KIND_DOCX,
+        )
+
+    assert error.value.operation == "docx_text_extraction"
+
+
+@pytest.mark.asyncio
+async def test_download_to_temp_file_timeout_is_explicit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        content_extractor,
+        "TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    class FakeBot:
+        async def download(self, telegram_file):
+            await asyncio.sleep(0.05)
+            return None
+
+    message = type("FakeMessage", (), {"bot": FakeBot()})()
+
+    with pytest.raises(OperationTimeoutError) as error:
+        await content_extractor._download_to_temp_file(message, object())
+
+    assert error.value.operation == "telegram_file_download"
+
+
+@pytest.mark.asyncio
+async def test_extract_from_document_returns_timeout_error(monkeypatch) -> None:
+    fake_document = type(
+        "FakeDocument",
+        (),
+        {
+            "file_name": "book.pdf",
+            "mime_type": "application/pdf",
+            "file_size": 100,
+        },
+    )()
+    fake_user = type("FakeUser", (), {"id": 123})()
+    message = type(
+        "FakeMessage",
+        (),
+        {
+            "document": fake_document,
+            "from_user": fake_user,
+        },
+    )()
+
+    async def fake_download_to_temp_file(*args, **kwargs):
+        return "fake.pdf", b"%PDF-1.7"
+
+    async def fake_run_document_processor(*args, **kwargs):
+        raise OperationTimeoutError("pdf_text_extraction", 0.01)
+
+    monkeypatch.setattr(
+        content_extractor,
+        "_download_to_temp_file",
+        fake_download_to_temp_file,
+    )
+    monkeypatch.setattr(
+        content_extractor,
+        "_run_document_processor",
+        fake_run_document_processor,
+    )
+    monkeypatch.setattr(content_extractor, "_safe_remove_file", lambda path: None)
+
+    result = await content_extractor._extract_from_document(message, None)
+
+    assert result == content_extractor.FILE_PROCESSING_TIMEOUT_ERROR
 
 
 def test_join_clean_text_blocks() -> None:

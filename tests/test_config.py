@@ -282,9 +282,13 @@ def test_ocr_min_text_length_must_be_positive() -> None:
         GEMINI_API_KEY="test_gemini_api_key",
         ADMIN_IDS="111",
         OCR_MIN_TEXT_LENGTH=8,
+        OCR_IMAGE_OPEN_TIMEOUT_SECONDS=5,
+        OCR_TOTAL_TIMEOUT_SECONDS=100,
     )
 
     assert settings.OCR_MIN_TEXT_LENGTH == 8
+    assert settings.OCR_IMAGE_OPEN_TIMEOUT_SECONDS == 5
+    assert settings.OCR_TOTAL_TIMEOUT_SECONDS == 100
 
 
 def test_ocr_min_text_length_rejects_zero() -> None:
@@ -294,6 +298,39 @@ def test_ocr_min_text_length_rejects_zero() -> None:
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
             OCR_MIN_TEXT_LENGTH=0,
+        )
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            OCR_TOTAL_TIMEOUT_SECONDS=0,
+        )
+
+
+def test_file_processing_timeouts_are_validated() -> None:
+    settings = Settings(
+        BOT_TOKEN="123456:test_bot_token",
+        GEMINI_API_KEY="test_gemini_api_key",
+        ADMIN_IDS="111",
+        TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS=30,
+        PDF_EXTRACTION_TIMEOUT_SECONDS=40,
+        DOCX_EXTRACTION_TIMEOUT_SECONDS=35,
+        TXT_EXTRACTION_TIMEOUT_SECONDS=10,
+    )
+
+    assert settings.TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS == 30
+    assert settings.PDF_EXTRACTION_TIMEOUT_SECONDS == 40
+    assert settings.DOCX_EXTRACTION_TIMEOUT_SECONDS == 35
+    assert settings.TXT_EXTRACTION_TIMEOUT_SECONDS == 10
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            PDF_EXTRACTION_TIMEOUT_SECONDS=0,
         )
 
 
@@ -385,11 +422,13 @@ def test_export_audio_max_size_is_validated() -> None:
         ADMIN_IDS="111",
         EXPORT_AUDIO_MAX_SIZE_MB=32,
         EXPORT_AUDIO_CROSSFADE_MS=80,
+        EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS=180,
     )
 
     assert settings.EXPORT_AUDIO_MAX_SIZE_MB == 32
     assert settings.EXPORT_AUDIO_SMOOTH_MERGE_ENABLED is True
     assert settings.EXPORT_AUDIO_CROSSFADE_MS == 80
+    assert settings.EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS == 180
 
     with pytest.raises(ValueError):
         Settings(
@@ -405,4 +444,12 @@ def test_export_audio_max_size_is_validated() -> None:
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
             EXPORT_AUDIO_CROSSFADE_MS=0,
+        )
+
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS=0,
         )

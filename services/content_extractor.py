@@ -1,14 +1,25 @@
 # Файл: services/content_extractor.py
 
-import asyncio
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from aiogram import types
 
+from config import (
+    DOCX_EXTRACTION_TIMEOUT_SECONDS,
+    PDF_EXTRACTION_TIMEOUT_SECONDS,
+    TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS,
+    TXT_EXTRACTION_TIMEOUT_SECONDS,
+)
 from services.file_processor import process_docx, process_pdf, process_txt
+from services.operation_timeouts import (
+    OperationTimeoutError,
+    run_sync_with_timeout,
+    run_with_timeout,
+)
 from services.ocr import extract_text_from_image
 from services.parser import extract_first_url, parse_article
 
@@ -25,6 +36,10 @@ SUPPORTED_FORMATS_ERROR = (
 FILE_TOO_LARGE_ERROR = (
     f"❌ Файл занадто великий.\n"
     f"Максимальний розмір документа — {MAX_DOCUMENT_SIZE_MB} МБ."
+)
+FILE_PROCESSING_TIMEOUT_ERROR = (
+    "❌ Обробка файлу зайняла занадто багато часу. "
+    "Спробуйте менший або простіший файл."
 )
 
 DOCUMENT_KIND_PDF = "pdf"
@@ -256,12 +271,20 @@ async def _download_to_temp_file(
     """
     Завантажує Telegram-файл у тимчасовий файл і повертає шлях та bytes.
     """
-    downloaded_file = await message.bot.download(telegram_file)
+    downloaded_file = await run_with_timeout(
+        message.bot.download(telegram_file),
+        operation="telegram_file_download",
+        timeout_seconds=TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS,
+    )
 
     if downloaded_file is None:
         raise RuntimeError("Telegram не повернув файл під час завантаження.")
 
-    file_bytes = downloaded_file.read()
+    file_bytes = await run_sync_with_timeout(
+        downloaded_file.read,
+        operation="telegram_file_read",
+        timeout_seconds=TELEGRAM_FILE_DOWNLOAD_TIMEOUT_SECONDS,
+    )
 
     if _is_downloaded_file_too_large(file_bytes):
         raise ValueError(FILE_TOO_LARGE_ERROR)
@@ -269,6 +292,27 @@ async def _download_to_temp_file(
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(file_bytes)
         return tmp.name, file_bytes
+
+
+async def _run_document_processor(
+    processor: Callable[[str], str],
+    file_path: str,
+    *,
+    document_kind: str,
+) -> str:
+    timeout_seconds_by_kind = {
+        DOCUMENT_KIND_DOCX: DOCX_EXTRACTION_TIMEOUT_SECONDS,
+        DOCUMENT_KIND_PDF: PDF_EXTRACTION_TIMEOUT_SECONDS,
+        DOCUMENT_KIND_TXT: TXT_EXTRACTION_TIMEOUT_SECONDS,
+    }
+    timeout_seconds = timeout_seconds_by_kind[document_kind]
+
+    return await run_sync_with_timeout(
+        processor,
+        file_path,
+        operation=f"{document_kind}_text_extraction",
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def _extract_from_text_message(message: types.Message) -> str:
@@ -309,6 +353,16 @@ async def _extract_from_photo(
         )
 
         return await extract_text_from_image(tmp_path)
+
+    except OperationTimeoutError as error:
+        logger.warning(
+            "ContentExtractor: timeout during photo processing user_id=%s "
+            "operation=%s timeout=%s",
+            message.from_user.id if message.from_user else None,
+            error.operation,
+            error.timeout_seconds,
+        )
+        return FILE_PROCESSING_TIMEOUT_ERROR
 
     except ValueError as error:
         error_text = str(error)
@@ -378,13 +432,25 @@ async def _extract_from_document(
             tmp_path = renamed_tmp_path
 
         if document_kind == DOCUMENT_KIND_DOCX:
-            return await asyncio.to_thread(process_docx, tmp_path)
+            return await _run_document_processor(
+                process_docx,
+                tmp_path,
+                document_kind=DOCUMENT_KIND_DOCX,
+            )
 
         if document_kind == DOCUMENT_KIND_PDF:
-            return await asyncio.to_thread(process_pdf, tmp_path)
+            return await _run_document_processor(
+                process_pdf,
+                tmp_path,
+                document_kind=DOCUMENT_KIND_PDF,
+            )
 
         if document_kind == DOCUMENT_KIND_TXT:
-            return await asyncio.to_thread(process_txt, tmp_path)
+            return await _run_document_processor(
+                process_txt,
+                tmp_path,
+                document_kind=DOCUMENT_KIND_TXT,
+            )
 
         if document_kind == DOCUMENT_KIND_IMAGE:
             await _safe_edit_status(
@@ -394,6 +460,18 @@ async def _extract_from_document(
             return await extract_text_from_image(tmp_path)
 
         return SUPPORTED_FORMATS_ERROR
+
+    except OperationTimeoutError as error:
+        logger.warning(
+            "ContentExtractor: timeout during document processing user_id=%s "
+            "filename=%s mime_type=%s operation=%s timeout=%s",
+            message.from_user.id if message.from_user else None,
+            filename,
+            mime_type,
+            error.operation,
+            error.timeout_seconds,
+        )
+        return FILE_PROCESSING_TIMEOUT_ERROR
 
     except ValueError as error:
         error_text = str(error)

@@ -8,10 +8,12 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
+from config import EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS
+
 logger = logging.getLogger(__name__)
 
 FFMPEG_TIMEOUT_SECONDS = 90
-FFMPEG_CONCAT_TIMEOUT_SECONDS = 300
+FFMPEG_CONCAT_TIMEOUT_SECONDS = EXPORT_AUDIO_CONCAT_TIMEOUT_SECONDS
 FFMPEG_MIN_CROSSFADE_SECONDS = 0.02
 
 
@@ -279,8 +281,17 @@ async def concat_ogg_files(
 
     if len(audio_files) == 1:
         try:
-            shutil.copyfile(audio_files[0], output_file)
+            await asyncio.wait_for(
+                asyncio.to_thread(shutil.copyfile, audio_files[0], output_file),
+                timeout=FFMPEG_CONCAT_TIMEOUT_SECONDS,
+            )
             return output_file
+        except asyncio.TimeoutError as error:
+            safe_remove_file(output_file)
+            raise RuntimeError(
+                "FFMPEG concat timeout: single audio copy took longer than "
+                f"{FFMPEG_CONCAT_TIMEOUT_SECONDS} seconds."
+            ) from error
         except Exception:
             safe_remove_file(output_file)
             raise
