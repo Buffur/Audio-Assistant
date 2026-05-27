@@ -327,7 +327,7 @@ async def open_catalog_document(callback: types.CallbackQuery) -> None:
         )
         return
 
-    await callback.answer("Відкриваю документ...")
+    await callback.answer("Починаю озвучку...")
 
     status_msg = await message.answer(CATALOG_OPENING_TEXT)
 

@@ -237,7 +237,8 @@ async def test_send_audio_chunk_can_enqueue_serialized_redis_job(monkeypatch) ->
         "session_id": "session-redis",
         "status_message_id": 42,
     }
-    assert "Почну, щойно звільниться обробка." in message.answers[0]
+    assert "Позиція в черзі: 7." in message.answers[0]
+    assert "Нічого натискати не потрібно" in message.answers[0]
 
 
 @pytest.mark.asyncio

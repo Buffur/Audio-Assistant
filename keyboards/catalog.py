@@ -153,7 +153,7 @@ def catalog_keyboard(
     Inline-клавіатура каталогу.
 
     Для кожного документа:
-    - якщо chunks є — показуємо «Відкрити»;
+    - якщо chunks є — показуємо «Слухати»;
     - якщо chunks немає — показуємо «Недоступно»;
     - завжди показуємо «Видалити».
     """
@@ -171,7 +171,7 @@ def catalog_keyboard(
 
         if has_chunks:
             open_button = InlineKeyboardButton(
-                text=f"▶️ Відкрити {item_number}",
+                text=f"▶️ Слухати {item_number}",
                 callback_data=build_catalog_open_callback(document_id)
             )
         else:

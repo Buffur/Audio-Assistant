@@ -10,7 +10,10 @@ from texts.admin_menu import ADMIN_ACCESS_DENIED_TEXT
 CALLBACK_OWNER_MISMATCH_TEXT = "Ця кнопка належить іншому користувачу."
 CALLBACK_MESSAGE_MISSING_TEXT = "Не вдалося знайти повідомлення для цієї дії."
 USER_MISSING_TEXT = "Не вдалося визначити користувача."
-PRIVATE_CHAT_REQUIRED_TEXT = "Ця дія доступна тільки в приватному чаті з ботом."
+PRIVATE_CHAT_REQUIRED_TEXT = (
+    "Ця дія доступна тільки в приватному чаті. "
+    "Відкрийте бот напряму і надішліть матеріал там."
+)
 
 
 def is_admin_user_id(user_id: int | None) -> bool:

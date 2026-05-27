@@ -30,7 +30,7 @@ MAX_DOCUMENT_SIZE_BYTES = MAX_DOCUMENT_SIZE_MB * 1024 * 1024
 
 SUPPORTED_FORMATS_ERROR = (
     "❌ Формат не підтримується.\n"
-    "Надішліть PDF, DOCX, TXT або фото."
+    "Надішліть PDF, DOCX, TXT, фото з текстом або посилання на статтю."
 )
 
 FILE_TOO_LARGE_ERROR = (
@@ -39,8 +39,16 @@ FILE_TOO_LARGE_ERROR = (
 )
 FILE_PROCESSING_TIMEOUT_ERROR = (
     "❌ Обробка файлу зайняла занадто багато часу. "
-    "Спробуйте менший або простіший файл."
+    "Спробуйте менший файл або документ із простішою структурою."
 )
+
+DOWNLOADING_FILE_STATUS_TEXT = "⏳ Завантажую файл..."
+PARSING_URL_STATUS_TEXT = "⏳ Завантажую сторінку та шукаю основний текст..."
+OCR_PHOTO_STATUS_TEXT = "⏳ Розпізнаю текст на фотографії..."
+OCR_DOCUMENT_IMAGE_STATUS_TEXT = "⏳ Розпізнаю текст на зображенні..."
+EXTRACTING_PDF_STATUS_TEXT = "⏳ Витягую текст із PDF..."
+EXTRACTING_DOCX_STATUS_TEXT = "⏳ Витягую текст із DOCX..."
+EXTRACTING_TXT_STATUS_TEXT = "⏳ Читаю TXT файл..."
 
 DOCUMENT_KIND_PDF = "pdf"
 DOCUMENT_KIND_DOCX = "docx"
@@ -78,6 +86,12 @@ DOCUMENT_KIND_SUFFIXES = {
     DOCUMENT_KIND_DOCX: ".docx",
     DOCUMENT_KIND_TXT: ".txt",
     DOCUMENT_KIND_IMAGE: ".jpg",
+}
+
+DOCUMENT_EXTRACTION_STATUS_TEXTS = {
+    DOCUMENT_KIND_PDF: EXTRACTING_PDF_STATUS_TEXT,
+    DOCUMENT_KIND_DOCX: EXTRACTING_DOCX_STATUS_TEXT,
+    DOCUMENT_KIND_TXT: EXTRACTING_TXT_STATUS_TEXT,
 }
 
 
@@ -315,7 +329,10 @@ async def _run_document_processor(
     )
 
 
-async def _extract_from_text_message(message: types.Message) -> str:
+async def _extract_from_text_message(
+    message: types.Message,
+    status_msg: types.Message | None,
+) -> str:
     """
     Витягує текст зі звичайного текстового повідомлення.
 
@@ -325,6 +342,7 @@ async def _extract_from_text_message(message: types.Message) -> str:
     url = extract_first_url(text)
 
     if url:
+        await _safe_edit_status(status_msg, PARSING_URL_STATUS_TEXT)
         return await parse_article(url)
 
     return text
@@ -337,7 +355,7 @@ async def _extract_from_photo(
     """
     Завантажує фото, запускає OCR і повертає розпізнаний текст.
     """
-    await _safe_edit_status(status_msg, " Розпізнаю текст на фотографії...")
+    await _safe_edit_status(status_msg, OCR_PHOTO_STATUS_TEXT)
 
     if not message.photo:
         return "❌ Не вдалося отримати фото."
@@ -403,6 +421,7 @@ async def _extract_from_document(
     tmp_path = None
 
     try:
+        await _safe_edit_status(status_msg, DOWNLOADING_FILE_STATUS_TEXT)
         tmp_path, file_bytes = await _download_to_temp_file(
             message=message,
             telegram_file=message.document,
@@ -431,6 +450,10 @@ async def _extract_from_document(
             os.replace(tmp_path, renamed_tmp_path)
             tmp_path = renamed_tmp_path
 
+        status_text = DOCUMENT_EXTRACTION_STATUS_TEXTS.get(document_kind)
+        if status_text:
+            await _safe_edit_status(status_msg, status_text)
+
         if document_kind == DOCUMENT_KIND_DOCX:
             return await _run_document_processor(
                 process_docx,
@@ -455,7 +478,7 @@ async def _extract_from_document(
         if document_kind == DOCUMENT_KIND_IMAGE:
             await _safe_edit_status(
                 status_msg,
-                " Розпізнаю зображення з документа...",
+                OCR_DOCUMENT_IMAGE_STATUS_TEXT,
             )
             return await extract_text_from_image(tmp_path)
 
@@ -520,7 +543,7 @@ async def extract_text_from_message(
     - або текст помилки, який починається з ❌.
     """
     if message.text:
-        return await _extract_from_text_message(message)
+        return await _extract_from_text_message(message, status_msg)
 
     if message.photo:
         return await _extract_from_photo(message, status_msg)

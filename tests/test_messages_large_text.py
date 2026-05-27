@@ -8,6 +8,9 @@ class FakeStatusMessage:
         self.text = text
         self.deleted = False
 
+    async def edit_text(self, text: str) -> None:
+        self.text = text
+
     async def delete(self) -> None:
         self.deleted = True
 

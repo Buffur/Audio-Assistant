@@ -31,7 +31,7 @@ CATALOG_DELETE_CONFIRM_TEXT = (
     "Цю дію не можна скасувати."
 )
 
-CATALOG_OPENING_TEXT = "⏳ Відкриваю документ з каталогу..."
+CATALOG_OPENING_TEXT = "⏳ Відкриваю документ і готую першу частину аудіо..."
 
 CATALOG_HELP_TEXT = (
     "📚 Команди каталогу:\n\n"
@@ -98,7 +98,7 @@ def build_catalog_text(
         parts.append(format_catalog_item(index, item))
 
     parts.append(
-        "\nНатисніть «Відкрити», щоб продовжити роботу з документом.\n"
+        "\nНатисніть «Слухати», щоб почати озвучку документа з початку.\n"
         "/catalog_clear — очистити каталог"
     )
 

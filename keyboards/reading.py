@@ -49,7 +49,7 @@ def reading_navigation_keyboard(
     Клавіатура для навігації під час читання основного тексту.
 
     Якщо є наступна частина, додається кнопка «Слухати далі».
-    Кнопки «Короткий зміст» і «Завершити» доступні окремими рядками.
+    Кнопки «Короткий зміст» і «Зупинити читання» доступні окремими рядками.
     """
     keyboard = []
 
@@ -67,7 +67,7 @@ def reading_navigation_keyboard(
     if can_export_audio:
         keyboard.append([
             InlineKeyboardButton(
-                text="🎧 Повна озвучка",
+                text="🎧 Один аудіофайл",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
@@ -88,7 +88,7 @@ def reading_navigation_keyboard(
 
     keyboard.append([
         InlineKeyboardButton(
-            text="⏹ Завершити",
+            text="⏹ Зупинити читання",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id
@@ -108,14 +108,14 @@ def summary_only_keyboard(
     Клавіатура для попередніх voice-повідомлень.
 
     Коли користувач натиснув «Слухати далі», ми прибираємо тільки цю кнопку,
-    але залишаємо «Короткий зміст» і «Завершити».
+    але залишаємо «Короткий зміст» і «Зупинити читання».
     """
     export_rows = []
 
     if can_export_audio:
         export_rows.append([
             InlineKeyboardButton(
-                text="🎧 Повна озвучка",
+                text="🎧 Один аудіофайл",
                 callback_data=build_reading_callback(
                     READ_EXPORT_AUDIO_ACTION,
                     session_id
@@ -136,7 +136,7 @@ def summary_only_keyboard(
 
     export_rows.append([
         InlineKeyboardButton(
-            text="⏹ Завершити",
+            text="⏹ Зупинити читання",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id
@@ -173,7 +173,7 @@ def summary_navigation_keyboard(
 
     keyboard.append([
         InlineKeyboardButton(
-            text="⏹ Завершити",
+            text="⏹ Зупинити читання",
             callback_data=build_reading_callback(
                 READ_STOP_ACTION,
                 session_id

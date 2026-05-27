@@ -27,9 +27,12 @@ from texts.limits import get_limit_reached_text
 from texts.messages import (
     ANALYZING_MATERIAL_TEXT,
     GENERIC_TEXT_EXTRACT_ERROR,
+    PREPARING_FIRST_AUDIO_TEXT,
+    SPLITTING_TEXT_STATUS,
     TEXT_SPLIT_ERROR,
     UNKNOWN_COMMAND_TEXT,
     UNSUPPORTED_MESSAGE_TEXT,
+    UNSUPPORTED_MESSAGE_REPEAT_TEXT,
     WAIT_CURRENT_AUDIO_REQUEST_TEXT,
     build_large_text_split_text,
     build_text_was_limited_text,
@@ -119,13 +122,24 @@ async def _handle_unsupported_message(
 
     if not _can_send_unsupported_message_warning(user_id, now):
         logger.info(
-            "Messages: unsupported message silently ignored user_id=%s message_id=%s",
+            "Messages: repeated unsupported message user_id=%s message_id=%s",
             user_id,
             getattr(message, "message_id", None),
         )
+        await message.answer(UNSUPPORTED_MESSAGE_REPEAT_TEXT)
         return
 
     await message.answer(UNSUPPORTED_MESSAGE_TEXT)
+
+
+async def _safe_edit_status(status_msg: types.Message, text: str) -> None:
+    try:
+        await status_msg.edit_text(text)
+    except Exception:
+        logger.exception(
+            "Messages: failed to update processing status user_id=%s",
+            getattr(getattr(status_msg, "chat", None), "id", None),
+        )
 
 
 async def _refund_reserved_input(user_id: int, usage_type: str) -> None:
@@ -191,6 +205,7 @@ async def _process_message(message: types.Message, user_id: int) -> None:
             build_text_was_limited_text(MAX_EXTRACTED_TEXT_LENGTH)
         )
 
+    await _safe_edit_status(status_msg, SPLITTING_TEXT_STATUS)
     chunks = split_text(text)
 
     if not chunks:
@@ -206,6 +221,8 @@ async def _process_message(message: types.Message, user_id: int) -> None:
             status_msg,
         )
         return
+
+    await _safe_edit_status(status_msg, PREPARING_FIRST_AUDIO_TEXT)
 
     document_id = await save_document_history_from_message(
         user_id=user_id,

@@ -493,10 +493,8 @@ MINIMAL_USER_COMMANDS = [
     BotCommand(command="help", description="Показати довідку"),
     BotCommand(command="settings", description="Налаштувати голос і швидкість"),
     BotCommand(command="catalog", description="Каталог документів"),
-    BotCommand(command="catalog_clear", description="Очистити каталог"),
     BotCommand(command="usage", description="Показати статистику використання"),
     BotCommand(command="privacy", description="Показати політику конфіденційності"),
-    BotCommand(command="delete_my_data", description="Очищає вашу історію документів"),
 ]
 
 USER_COMMANDS = [

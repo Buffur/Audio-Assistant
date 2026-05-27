@@ -35,5 +35,9 @@ def test_help_text_mentions_supported_languages() -> None:
 
 
 def test_help_text_lists_visible_user_commands() -> None:
-    assert "/catalog_clear — очистити каталог" in HELP_TEXT
-    assert "/delete_my_data — очистити вашу історію документів" in HELP_TEXT
+    assert "/settings — налаштувати голос і швидкість" in HELP_TEXT
+    assert "/catalog — каталог документів" in HELP_TEXT
+    assert "/usage — показати статистику використання" in HELP_TEXT
+    assert "/privacy — показати політику конфіденційності" in HELP_TEXT
+    assert "/catalog_clear — очистити каталог" not in HELP_TEXT
+    assert "/delete_my_data — очистити вашу історію документів" not in HELP_TEXT

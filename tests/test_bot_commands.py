@@ -44,10 +44,8 @@ def test_visible_user_commands_match_regular_user_menu() -> None:
         "help",
         "settings",
         "catalog",
-        "catalog_clear",
         "usage",
         "privacy",
-        "delete_my_data",
     ]
 
 

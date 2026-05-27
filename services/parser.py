@@ -891,7 +891,10 @@ async def parse_article(url: str) -> str:
         url = extracted_url
 
     if not _is_valid_url(url):
-        return "❌ Некоректне посилання."
+        return (
+            "❌ Не вдалося розпізнати посилання. "
+            "Надішліть повний URL, який починається з http:// або https://."
+        )
 
     if not await _is_safe_url_for_request(url):
         return "❌ Це посилання не можна обробити з міркувань безпеки."
@@ -900,19 +903,31 @@ async def parse_article(url: str) -> str:
         html = await _load_html(url)
 
         if not html:
-            return "❌ Помилка завантаження сторінки."
+            return (
+                "❌ Не вдалося завантажити сторінку. "
+                "Перевірте посилання або спробуйте іншу статтю."
+            )
 
     except ValueError as e:
         logger.warning("Сторінку не оброблено: %s", e)
-        return "❌ Сторінка занадто велика для обробки."
+        return (
+            "❌ Сторінка занадто велика для обробки. "
+            "Спробуйте скопіювати основний текст і надіслати його повідомленням."
+        )
 
     except asyncio.TimeoutError:
         logger.error("Тайм-аут при завантаженні URL: %s", url)
-        return "❌ Сторінка завантажується занадто довго."
+        return (
+            "❌ Сторінка завантажується занадто довго. "
+            "Спробуйте ще раз пізніше або надішліть текст статті напряму."
+        )
 
     except Exception as e:
         logger.error("Мережева помилка при завантаженні %s: %s", url, e)
-        return "❌ Помилка завантаження сторінки."
+        return (
+            "❌ Не вдалося завантажити сторінку. "
+            "Перевірте посилання або спробуйте іншу статтю."
+        )
 
     soup = BeautifulSoup(html, "html.parser")
     raw_soup = BeautifulSoup(html, "html.parser")
@@ -948,7 +963,10 @@ async def parse_article(url: str) -> str:
         final_text = _fallback_parse(soup)
 
     if not final_text or len(final_text.strip()) < MIN_ARTICLE_LENGTH:
-        return "❌ Не вдалося знайти текст на цій сторінці."
+        return (
+            "❌ Не вдалося знайти основний текст на цій сторінці. "
+            "Спробуйте скопіювати текст статті й надіслати його повідомленням."
+        )
 
     return clean_text_for_tts(final_text)
 
