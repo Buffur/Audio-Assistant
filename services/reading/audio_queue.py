@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from config import (
     READING_AUDIO_QUEUE_BACKEND,
     READING_AUDIO_QUEUE_MAX_SIZE,
     READING_AUDIO_QUEUE_REDIS_KEY,
+    READING_AUDIO_QUEUE_WORKER_COUNT,
 )
 from services.redis_client import get_redis_client
 
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS = 10.0
 REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS = 5
 REDIS_AUDIO_QUEUE_PROCESSING_KEY = f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
+DEFERRED_AUDIO_JOB_SLEEP_SECONDS = 0.05
 
 AudioGenerationJob = Callable[[], Awaitable[None]]
 
@@ -113,12 +116,127 @@ class AudioQueueStats:
         }
 
 _audio_generation_queue: asyncio.Queue[AudioGenerationJob] | None = None
-_audio_generation_worker_task: asyncio.Task | None = None
+_audio_generation_worker_tasks: set[asyncio.Task] = set()
 _memory_audio_generation_processing = 0
-_redis_audio_generation_worker_task: asyncio.Task | None = None
+_memory_audio_generation_deferred_jobs: dict[int, deque[AudioGenerationJob]] = {}
+_redis_audio_generation_worker_tasks: set[asyncio.Task] = set()
 _redis_audio_generation_stop_event: asyncio.Event | None = None
-_redis_audio_generation_active_raw_job: str | None = None
+_redis_audio_generation_active_raw_jobs: set[str] = set()
+_redis_audio_generation_deferred_jobs: dict[
+    int,
+    deque[tuple[str, SerializedAudioJob]],
+] = {}
 _redis_audio_queue_recovered = False
+_active_audio_user_ids: set[int] = set()
+_active_audio_user_lock: asyncio.Lock | None = None
+
+
+def _worker_count() -> int:
+    return max(int(READING_AUDIO_QUEUE_WORKER_COUNT), 1)
+
+
+def _memory_audio_job_user_id(job: AudioGenerationJob) -> int | None:
+    user_id = getattr(job, "_reading_audio_user_id", None)
+
+    return user_id if isinstance(user_id, int) else None
+
+
+def set_audio_generation_job_user_id(
+    job: AudioGenerationJob,
+    user_id: int,
+) -> AudioGenerationJob:
+    setattr(job, "_reading_audio_user_id", user_id)
+    return job
+
+
+def _active_user_lock() -> asyncio.Lock:
+    global _active_audio_user_lock
+
+    if _active_audio_user_lock is None:
+        _active_audio_user_lock = asyncio.Lock()
+
+    return _active_audio_user_lock
+
+
+async def _try_reserve_audio_user(user_id: int | None) -> bool:
+    if user_id is None:
+        return True
+
+    async with _active_user_lock():
+        if user_id in _active_audio_user_ids:
+            return False
+
+        _active_audio_user_ids.add(user_id)
+        return True
+
+
+async def _release_audio_user(user_id: int | None) -> None:
+    if user_id is None:
+        return
+
+    async with _active_user_lock():
+        _active_audio_user_ids.discard(user_id)
+
+
+def _deferred_memory_jobs_count() -> int:
+    return sum(len(jobs) for jobs in _memory_audio_generation_deferred_jobs.values())
+
+
+def _defer_memory_audio_job(user_id: int, job: AudioGenerationJob) -> None:
+    _memory_audio_generation_deferred_jobs.setdefault(user_id, deque()).append(job)
+
+
+async def _pop_ready_deferred_memory_audio_job() -> AudioGenerationJob | None:
+    for user_id, jobs in list(_memory_audio_generation_deferred_jobs.items()):
+        if not jobs:
+            _memory_audio_generation_deferred_jobs.pop(user_id, None)
+            continue
+
+        if not await _try_reserve_audio_user(user_id):
+            continue
+
+        job = jobs.popleft()
+
+        if not jobs:
+            _memory_audio_generation_deferred_jobs.pop(user_id, None)
+
+        return job
+
+    return None
+
+
+def _deferred_redis_jobs_count() -> int:
+    return sum(len(jobs) for jobs in _redis_audio_generation_deferred_jobs.values())
+
+
+def _defer_redis_audio_job(
+    raw_job: str,
+    job: SerializedAudioJob,
+) -> None:
+    user_id = int(job["user_id"])
+    _redis_audio_generation_deferred_jobs.setdefault(user_id, deque()).append(
+        (raw_job, job)
+    )
+
+
+async def _pop_ready_deferred_redis_audio_job(
+) -> tuple[str, SerializedAudioJob] | None:
+    for user_id, jobs in list(_redis_audio_generation_deferred_jobs.items()):
+        if not jobs:
+            _redis_audio_generation_deferred_jobs.pop(user_id, None)
+            continue
+
+        if not await _try_reserve_audio_user(user_id):
+            continue
+
+        raw_job, job = jobs.popleft()
+
+        if not jobs:
+            _redis_audio_generation_deferred_jobs.pop(user_id, None)
+
+        return raw_job, job
+
+    return None
 
 
 async def _audio_generation_worker(
@@ -127,7 +245,19 @@ async def _audio_generation_worker(
     global _memory_audio_generation_processing
 
     while True:
-        job = await queue.get()
+        job = await _pop_ready_deferred_memory_audio_job()
+
+        if job is None:
+            job = await queue.get()
+            user_id = _memory_audio_job_user_id(job)
+
+            if not await _try_reserve_audio_user(user_id):
+                if user_id is not None:
+                    _defer_memory_audio_job(user_id, job)
+                    await asyncio.sleep(DEFERRED_AUDIO_JOB_SLEEP_SECONDS)
+                    continue
+
+        user_id = _memory_audio_job_user_id(job)
         _memory_audio_generation_processing += 1
 
         try:
@@ -141,6 +271,7 @@ async def _audio_generation_worker(
                 _memory_audio_generation_processing - 1,
                 0,
             )
+            await _release_audio_user(user_id)
             queue.task_done()
 
 
@@ -149,17 +280,11 @@ def use_redis_audio_queue() -> bool:
 
 
 def _memory_worker_running() -> bool:
-    return (
-        _audio_generation_worker_task is not None
-        and not _audio_generation_worker_task.done()
-    )
+    return any(not task.done() for task in _audio_generation_worker_tasks)
 
 
 def _redis_worker_running() -> bool:
-    return (
-        _redis_audio_generation_worker_task is not None
-        and not _redis_audio_generation_worker_task.done()
-    )
+    return any(not task.done() for task in _redis_audio_generation_worker_tasks)
 
 
 def _set_created_at(
@@ -423,49 +548,51 @@ async def _requeue_redis_audio_job(raw_job: str) -> int:
 
 
 def _set_active_redis_audio_job(raw_job: str) -> None:
-    global _redis_audio_generation_active_raw_job
-
-    _redis_audio_generation_active_raw_job = raw_job
+    _redis_audio_generation_active_raw_jobs.add(raw_job)
 
 
 def _clear_active_redis_audio_job(raw_job: str) -> None:
-    global _redis_audio_generation_active_raw_job
-
-    if _redis_audio_generation_active_raw_job == raw_job:
-        _redis_audio_generation_active_raw_job = None
+    _redis_audio_generation_active_raw_jobs.discard(raw_job)
 
 
 async def _requeue_active_redis_audio_job() -> int:
-    global _redis_audio_generation_active_raw_job
+    raw_jobs = list(_redis_audio_generation_active_raw_jobs)
 
-    raw_job = _redis_audio_generation_active_raw_job
-
-    if raw_job is None:
+    if not raw_jobs:
         return 0
 
+    requeued_count = 0
+
     try:
-        moved_count = await _requeue_redis_audio_job(raw_job)
+        for raw_job in raw_jobs:
+            moved_count = await _requeue_redis_audio_job(raw_job)
+            requeued_count += moved_count
 
-        if moved_count:
+            if not moved_count:
+                logger.warning(
+                    "ReadingAudioQueue: active Redis job was not found in "
+                    "processing during shutdown",
+                )
+
+        if requeued_count:
             logger.warning(
-                "ReadingAudioQueue: requeued active Redis job during shutdown",
-            )
-        else:
-            logger.warning(
-                "ReadingAudioQueue: active Redis job was not found in processing "
-                "during shutdown",
+                "ReadingAudioQueue: requeued active/deferred Redis jobs during "
+                "shutdown count=%s",
+                requeued_count,
             )
 
-        return moved_count
+        return requeued_count
 
     except RedisError:
         logger.exception(
-            "ReadingAudioQueue: failed to requeue active Redis job during shutdown",
+            "ReadingAudioQueue: failed to requeue active/deferred Redis jobs "
+            "during shutdown",
         )
-        return 0
+        return requeued_count
 
     finally:
-        _redis_audio_generation_active_raw_job = None
+        _redis_audio_generation_active_raw_jobs.clear()
+        _redis_audio_generation_deferred_jobs.clear()
 
 
 async def _redis_audio_generation_worker(
@@ -477,47 +604,66 @@ async def _redis_audio_generation_worker(
     try:
         while not stop_event.is_set():
             raw_job = None
+            reserved_user_id: int | None = None
 
             try:
-                client = await get_redis_client()
-                raw_job = await client.brpoplpush(
-                    READING_AUDIO_QUEUE_REDIS_KEY,
-                    REDIS_AUDIO_QUEUE_PROCESSING_KEY,
-                    timeout=REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS,
-                )
+                deferred_job = await _pop_ready_deferred_redis_audio_job()
 
-                if raw_job is None:
-                    continue
-
-                _set_active_redis_audio_job(raw_job)
-
-                if stop_event.is_set():
-                    try:
-                        await _requeue_redis_audio_job(raw_job)
-                        _clear_active_redis_audio_job(raw_job)
-                    except RedisError:
-                        logger.exception(
-                            "ReadingAudioQueue: failed to requeue Redis job "
-                            "after shutdown signal",
-                        )
-                    break
-
-                try:
-                    job = validate_audio_job(json.loads(raw_job))
-                except InvalidAudioJobError as error:
-                    logger.warning(
-                        "ReadingAudioQueue: invalid Redis job skipped: %s",
-                        error,
+                if deferred_job is not None:
+                    raw_job, job = deferred_job
+                    reserved_user_id = int(job["user_id"])
+                else:
+                    client = await get_redis_client()
+                    raw_job = await client.brpoplpush(
+                        READING_AUDIO_QUEUE_REDIS_KEY,
+                        REDIS_AUDIO_QUEUE_PROCESSING_KEY,
+                        timeout=REDIS_AUDIO_QUEUE_BLPOP_TIMEOUT_SECONDS,
                     )
-                    await _ack_redis_audio_job(raw_job)
-                    _clear_active_redis_audio_job(raw_job)
-                    continue
+
+                    if raw_job is None:
+                        continue
+
+                    _set_active_redis_audio_job(raw_job)
+
+                    if stop_event.is_set():
+                        try:
+                            await _requeue_redis_audio_job(raw_job)
+                            _clear_active_redis_audio_job(raw_job)
+                        except RedisError:
+                            logger.exception(
+                                "ReadingAudioQueue: failed to requeue Redis job "
+                                "after shutdown signal",
+                            )
+                        break
+
+                    try:
+                        job = validate_audio_job(json.loads(raw_job))
+                    except InvalidAudioJobError as error:
+                        logger.warning(
+                            "ReadingAudioQueue: invalid Redis job skipped: %s",
+                            error,
+                        )
+                        await _ack_redis_audio_job(raw_job)
+                        _clear_active_redis_audio_job(raw_job)
+                        continue
+
+                    user_id = int(job["user_id"])
+
+                    if not await _try_reserve_audio_user(user_id):
+                        _defer_redis_audio_job(raw_job, job)
+                        await asyncio.sleep(DEFERRED_AUDIO_JOB_SLEEP_SECONDS)
+                        continue
+
+                    reserved_user_id = user_id
 
                 await job_handler(bot, job)
                 await _ack_redis_audio_job(raw_job)
                 _clear_active_redis_audio_job(raw_job)
+                await _release_audio_user(reserved_user_id)
+                reserved_user_id = None
 
             except asyncio.CancelledError:
+                await _release_audio_user(reserved_user_id)
                 raise
 
             except (RedisError, json.JSONDecodeError, KeyError, ValueError):
@@ -526,6 +672,7 @@ async def _redis_audio_generation_worker(
                     with suppress(RedisError):
                         await _ack_redis_audio_job(raw_job)
                     _clear_active_redis_audio_job(raw_job)
+                await _release_audio_user(reserved_user_id)
                 await asyncio.sleep(1)
 
             except Exception:
@@ -534,6 +681,7 @@ async def _redis_audio_generation_worker(
                     with suppress(RedisError):
                         await _ack_redis_audio_job(raw_job)
                     _clear_active_redis_audio_job(raw_job)
+                await _release_audio_user(reserved_user_id)
 
     finally:
         await bot.session.close()
@@ -550,20 +698,23 @@ async def start_audio_workers(job_handler: SerializedAudioJobHandler) -> None:
 def _ensure_redis_audio_generation_worker(
     job_handler: SerializedAudioJobHandler,
 ) -> None:
-    global _redis_audio_generation_worker_task
     global _redis_audio_generation_stop_event
 
-    if (
-        _redis_audio_generation_worker_task is None
-        or _redis_audio_generation_worker_task.done()
-    ):
+    for task in list(_redis_audio_generation_worker_tasks):
+        if task.done():
+            _redis_audio_generation_worker_tasks.discard(task)
+
+    if _redis_audio_generation_stop_event is None:
         _redis_audio_generation_stop_event = asyncio.Event()
-        _redis_audio_generation_worker_task = asyncio.create_task(
+
+    while len(_redis_audio_generation_worker_tasks) < _worker_count():
+        worker_task = asyncio.create_task(
             _redis_audio_generation_worker(
                 job_handler,
                 _redis_audio_generation_stop_event,
             )
         )
+        _redis_audio_generation_worker_tasks.add(worker_task)
 
 
 async def redis_audio_queue_position() -> int:
@@ -608,7 +759,10 @@ async def get_audio_queue_stats() -> AudioQueueStats:
     return AudioQueueStats(
         backend="memory",
         max_size=READING_AUDIO_QUEUE_MAX_SIZE,
-        pending=queue.qsize() if queue is not None else 0,
+        pending=(
+            (queue.qsize() if queue is not None else 0)
+            + _deferred_memory_jobs_count()
+        ),
         processing=_memory_audio_generation_processing,
         worker_running=_memory_worker_running(),
     )
@@ -649,33 +803,43 @@ async def enqueue_redis_audio_job(
 
 def ensure_memory_audio_generation_queue() -> asyncio.Queue[AudioGenerationJob]:
     global _audio_generation_queue
-    global _audio_generation_worker_task
 
     if _audio_generation_queue is None:
         _audio_generation_queue = asyncio.Queue(
             maxsize=READING_AUDIO_QUEUE_MAX_SIZE,
         )
 
-    if (
-        _audio_generation_worker_task is None
-        or _audio_generation_worker_task.done()
-    ):
-        _audio_generation_worker_task = asyncio.create_task(
+    for task in list(_audio_generation_worker_tasks):
+        if task.done():
+            _audio_generation_worker_tasks.discard(task)
+
+    while len(_audio_generation_worker_tasks) < _worker_count():
+        worker_task = asyncio.create_task(
             _audio_generation_worker(_audio_generation_queue)
         )
+        _audio_generation_worker_tasks.add(worker_task)
 
     return _audio_generation_queue
 
 
 def memory_audio_queue_position() -> int:
     queue = ensure_memory_audio_generation_queue()
-    return queue.qsize() + _memory_audio_generation_processing + 1
+    return (
+        queue.qsize()
+        + _deferred_memory_jobs_count()
+        + _memory_audio_generation_processing
+        + 1
+    )
 
 
 def enqueue_memory_audio_job(job: AudioGenerationJob) -> None:
     queue = ensure_memory_audio_generation_queue()
 
-    active_jobs = queue.qsize() + _memory_audio_generation_processing
+    active_jobs = (
+        queue.qsize()
+        + _deferred_memory_jobs_count()
+        + _memory_audio_generation_processing
+    )
 
     if active_jobs >= READING_AUDIO_QUEUE_MAX_SIZE:
         raise asyncio.QueueFull
@@ -687,53 +851,60 @@ async def close_audio_queue(
     timeout_seconds: float = READING_AUDIO_QUEUE_FLUSH_TIMEOUT_SECONDS,
 ) -> None:
     global _audio_generation_queue
-    global _audio_generation_worker_task
     global _memory_audio_generation_processing
-    global _redis_audio_generation_worker_task
     global _redis_audio_generation_stop_event
     global _redis_audio_queue_recovered
 
     queue = _audio_generation_queue
-    worker_task = _audio_generation_worker_task
-    redis_worker_task = _redis_audio_generation_worker_task
+    worker_tasks = list(_audio_generation_worker_tasks)
+    redis_worker_tasks = list(_redis_audio_generation_worker_tasks)
     redis_stop_event = _redis_audio_generation_stop_event
 
     if queue is not None:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(queue.join(), timeout=timeout_seconds)
 
-    if worker_task is not None and not worker_task.done():
-        worker_task.cancel()
+    for worker_task in worker_tasks:
+        if not worker_task.done():
+            worker_task.cancel()
 
+    for worker_task in worker_tasks:
         with suppress(asyncio.CancelledError):
             await worker_task
 
     _audio_generation_queue = None
-    _audio_generation_worker_task = None
+    _audio_generation_worker_tasks.clear()
     _memory_audio_generation_processing = 0
+    _memory_audio_generation_deferred_jobs.clear()
 
-    if redis_worker_task is not None:
-        if not redis_worker_task.done():
+    if redis_worker_tasks:
+        if any(not task.done() for task in redis_worker_tasks):
             if redis_stop_event is not None:
                 redis_stop_event.set()
 
             try:
                 await asyncio.wait_for(
-                    redis_worker_task,
+                    asyncio.gather(*redis_worker_tasks, return_exceptions=True),
                     timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "ReadingAudioQueue: Redis worker shutdown timed out; "
+                    "ReadingAudioQueue: Redis workers shutdown timed out; "
                     "cancelling worker",
                 )
-                redis_worker_task.cancel()
 
-                with suppress(asyncio.CancelledError):
-                    await redis_worker_task
+                for redis_worker_task in redis_worker_tasks:
+                    if not redis_worker_task.done():
+                        redis_worker_task.cancel()
+
+                await asyncio.gather(
+                    *redis_worker_tasks,
+                    return_exceptions=True,
+                )
 
         await _requeue_active_redis_audio_job()
 
-    _redis_audio_generation_worker_task = None
+    _redis_audio_generation_worker_tasks.clear()
     _redis_audio_generation_stop_event = None
     _redis_audio_queue_recovered = False
+    _active_audio_user_ids.clear()

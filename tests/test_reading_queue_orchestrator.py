@@ -404,6 +404,8 @@ async def test_prefetch_redis_backpressure_rejects_full_queue() -> None:
 
 @pytest.mark.asyncio
 async def test_prefetch_memory_path_returns_created_task() -> None:
+    queued_jobs = []
+
     async def redis_audio_queue_position() -> int:
         raise AssertionError("memory prefetch must not read Redis queue position")
 
@@ -415,7 +417,7 @@ async def test_prefetch_memory_path_returns_created_task() -> None:
         redis_audio_queue_position=redis_audio_queue_position,
         enqueue_redis_audio_job=enqueue_redis_audio_job,
         memory_audio_queue_position=lambda: 0,
-        enqueue_memory_audio_job=lambda job: None,
+        enqueue_memory_audio_job=lambda job: queued_jobs.append(job),
         get_queue_stats=healthy_memory_queue_stats,
     )
 
@@ -438,4 +440,5 @@ async def test_prefetch_memory_path_returns_created_task() -> None:
     assert result.queued is True
     assert result.backend == "memory"
     assert result.memory_task is not None
+    await queued_jobs[0]()
     assert await result.memory_task == ["prefetch.ogg"]

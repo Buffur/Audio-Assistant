@@ -73,6 +73,7 @@ REDIS_PREFETCH_WAIT_SECONDS = prefetch_service.REDIS_PREFETCH_WAIT_SECONDS
 READING_AUDIO_QUEUE_BACKEND = reading_audio_queue.READING_AUDIO_QUEUE_BACKEND
 READING_AUDIO_QUEUE_REDIS_KEY = reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY
 READING_AUDIO_QUEUE_MAX_SIZE = reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE
+READING_AUDIO_QUEUE_WORKER_COUNT = reading_audio_queue.READING_AUDIO_QUEUE_WORKER_COUNT
 REDIS_AUDIO_QUEUE_PROCESSING_KEY = reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY
 
 AudioGenerationJob = reading_audio_queue.AudioGenerationJob
@@ -84,6 +85,7 @@ _audio_queue_ensure_redis_audio_generation_worker = (
 _last_audio_queue_backend = READING_AUDIO_QUEUE_BACKEND
 _last_audio_queue_redis_key = READING_AUDIO_QUEUE_REDIS_KEY
 _last_audio_queue_max_size = READING_AUDIO_QUEUE_MAX_SIZE
+_last_audio_queue_worker_count = READING_AUDIO_QUEUE_WORKER_COUNT
 
 PRIVACY_DELETE_MARKER_PREFIX = privacy_service.PRIVACY_DELETE_MARKER_PREFIX
 PRIVACY_DELETE_MARKER_TTL_SECONDS = (
@@ -104,10 +106,12 @@ def _sync_audio_queue_compat_settings() -> None:
     global READING_AUDIO_QUEUE_BACKEND
     global READING_AUDIO_QUEUE_REDIS_KEY
     global READING_AUDIO_QUEUE_MAX_SIZE
+    global READING_AUDIO_QUEUE_WORKER_COUNT
     global REDIS_AUDIO_QUEUE_PROCESSING_KEY
     global _last_audio_queue_backend
     global _last_audio_queue_redis_key
     global _last_audio_queue_max_size
+    global _last_audio_queue_worker_count
 
     READING_AUDIO_QUEUE_BACKEND = _select_audio_queue_compat_value(
         READING_AUDIO_QUEUE_BACKEND,
@@ -124,10 +128,16 @@ def _sync_audio_queue_compat_settings() -> None:
         reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE,
         _last_audio_queue_max_size,
     )
+    READING_AUDIO_QUEUE_WORKER_COUNT = _select_audio_queue_compat_value(
+        READING_AUDIO_QUEUE_WORKER_COUNT,
+        reading_audio_queue.READING_AUDIO_QUEUE_WORKER_COUNT,
+        _last_audio_queue_worker_count,
+    )
 
     reading_audio_queue.READING_AUDIO_QUEUE_BACKEND = READING_AUDIO_QUEUE_BACKEND
     reading_audio_queue.READING_AUDIO_QUEUE_REDIS_KEY = READING_AUDIO_QUEUE_REDIS_KEY
     reading_audio_queue.READING_AUDIO_QUEUE_MAX_SIZE = READING_AUDIO_QUEUE_MAX_SIZE
+    reading_audio_queue.READING_AUDIO_QUEUE_WORKER_COUNT = READING_AUDIO_QUEUE_WORKER_COUNT
     reading_audio_queue.REDIS_AUDIO_QUEUE_PROCESSING_KEY = (
         f"{READING_AUDIO_QUEUE_REDIS_KEY}:processing"
     )
@@ -135,6 +145,7 @@ def _sync_audio_queue_compat_settings() -> None:
     _last_audio_queue_backend = READING_AUDIO_QUEUE_BACKEND
     _last_audio_queue_redis_key = READING_AUDIO_QUEUE_REDIS_KEY
     _last_audio_queue_max_size = READING_AUDIO_QUEUE_MAX_SIZE
+    _last_audio_queue_worker_count = READING_AUDIO_QUEUE_WORKER_COUNT
 
 
 def _select_audio_queue_compat_value(service_value, queue_value, last_value):

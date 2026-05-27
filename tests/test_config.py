@@ -71,12 +71,14 @@ def test_reading_backends_support_memory_and_redis() -> None:
         READING_GENERATION_STALE_SECONDS=120,
         READING_AUDIO_QUEUE_BACKEND="redis",
         READING_AUDIO_QUEUE_MAX_SIZE=5,
+        READING_AUDIO_QUEUE_WORKER_COUNT=3,
     )
 
     assert settings.READING_SESSION_BACKEND == "memory"
     assert settings.READING_GENERATION_STALE_SECONDS == 120
     assert settings.READING_AUDIO_QUEUE_BACKEND == "redis"
     assert settings.READING_AUDIO_QUEUE_MAX_SIZE == 5
+    assert settings.READING_AUDIO_QUEUE_WORKER_COUNT == 3
 
 
 def test_reading_generation_stale_seconds_rejects_zero() -> None:
@@ -86,6 +88,16 @@ def test_reading_generation_stale_seconds_rejects_zero() -> None:
             GEMINI_API_KEY="test_gemini_api_key",
             ADMIN_IDS="111",
             READING_GENERATION_STALE_SECONDS=0,
+        )
+
+
+def test_reading_audio_queue_worker_count_rejects_zero() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            BOT_TOKEN="123456:test_bot_token",
+            GEMINI_API_KEY="test_gemini_api_key",
+            ADMIN_IDS="111",
+            READING_AUDIO_QUEUE_WORKER_COUNT=0,
         )
 
 

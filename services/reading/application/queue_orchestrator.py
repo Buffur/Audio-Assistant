@@ -41,7 +41,7 @@ class QueueEnqueueResult:
     status: QueueEnqueueStatus
     backend: QueueBackend
     status_msg: Any | None = None
-    memory_task: asyncio.Task[list[str]] | None = None
+    memory_task: asyncio.Future[list[str]] | None = None
     error: BaseException | None = None
     queue_stats: audio_queue.AudioQueueStats | None = None
 
@@ -269,6 +269,7 @@ class ReadingAudioQueueOrchestrator:
             )
 
         try:
+            audio_queue.set_audio_generation_job_user_id(job, command.user_id)
             self.enqueue_memory_audio_job(job)
             return QueueEnqueueResult(
                 status="queued",
@@ -382,6 +383,7 @@ class ReadingAudioQueueOrchestrator:
             )
 
         try:
+            audio_queue.set_audio_generation_job_user_id(job, command.user_id)
             self.enqueue_memory_audio_job(job)
             return QueueEnqueueResult(
                 status="queued",
@@ -460,7 +462,21 @@ class ReadingAudioQueueOrchestrator:
             if backpressure_result is not None:
                 return backpressure_result
 
-        memory_task = asyncio.create_task(command.memory_audio_job())
+        loop = asyncio.get_running_loop()
+        memory_task: asyncio.Future[list[str]] = loop.create_future()
+
+        async def job() -> None:
+            try:
+                result = await command.memory_audio_job()
+                if not memory_task.done():
+                    memory_task.set_result(result)
+            except Exception as error:
+                if not memory_task.done():
+                    memory_task.set_exception(error)
+
+        audio_queue.set_audio_generation_job_user_id(job, command.user_id)
+        self.enqueue_memory_audio_job(job)
+
         return QueueEnqueueResult(
             status="queued",
             backend="memory",

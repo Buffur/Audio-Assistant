@@ -221,6 +221,71 @@ async def test_memory_audio_queue_backpressure_counts_processing_job(
 
 
 @pytest.mark.asyncio
+async def test_memory_audio_queue_serializes_same_user_without_starving_others(
+    monkeypatch,
+) -> None:
+    started_user_one_first = asyncio.Event()
+    release_user_one_first = asyncio.Event()
+    started_user_one_second = asyncio.Event()
+    started_user_two = asyncio.Event()
+    execution_order: list[str] = []
+
+    async def user_one_first_job() -> None:
+        execution_order.append("user-1:first")
+        started_user_one_first.set()
+        await release_user_one_first.wait()
+
+    async def user_one_second_job() -> None:
+        execution_order.append("user-1:second")
+        started_user_one_second.set()
+
+    async def user_two_job() -> None:
+        execution_order.append("user-2:first")
+        started_user_two.set()
+
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_BACKEND", "memory")
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_WORKER_COUNT", 2)
+    await reading_audio_queue.close_audio_queue(timeout_seconds=0.1)
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_user_id(
+            user_one_first_job,
+            1,
+        )
+    )
+    await asyncio.wait_for(started_user_one_first.wait(), timeout=1)
+
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_user_id(
+            user_one_second_job,
+            1,
+        )
+    )
+    reading_audio_queue.enqueue_memory_audio_job(
+        reading_audio_queue.set_audio_generation_job_user_id(
+            user_two_job,
+            2,
+        )
+    )
+
+    await asyncio.wait_for(started_user_two.wait(), timeout=1)
+
+    assert started_user_one_second.is_set() is False
+    assert execution_order == ["user-1:first", "user-2:first"]
+
+    release_user_one_first.set()
+    await asyncio.wait_for(started_user_one_second.wait(), timeout=1)
+
+    assert execution_order == [
+        "user-1:first",
+        "user-2:first",
+        "user-1:second",
+    ]
+
+    await reading_audio_queue.close_audio_queue(timeout_seconds=1.0)
+
+
+@pytest.mark.asyncio
 async def test_close_audio_queue_waits_for_active_redis_job(monkeypatch) -> None:
     payload = reading_audio_queue.serialize_audio_job(
         reading_audio_queue.build_send_chunk_job(
@@ -300,7 +365,128 @@ async def test_close_audio_queue_waits_for_active_redis_job(monkeypatch) -> None
 
     assert fake_redis.pending == []
     assert fake_redis.processing == []
-    assert closed_sessions == [True]
+    assert closed_sessions == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_redis_audio_workers_defer_same_user_job_and_process_other_user(
+    monkeypatch,
+) -> None:
+    first_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_send_chunk_job(
+            user_id=1,
+            chat_id=1001,
+            session_id="user-1:first",
+            status_message_id=None,
+        )
+    )
+    second_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_send_chunk_job(
+            user_id=1,
+            chat_id=1001,
+            session_id="user-1:second",
+            status_message_id=None,
+        )
+    )
+    other_user_payload = reading_audio_queue.serialize_audio_job(
+        reading_audio_queue.build_send_chunk_job(
+            user_id=2,
+            chat_id=1002,
+            session_id="user-2:first",
+            status_message_id=None,
+        )
+    )
+    started_user_one_first = asyncio.Event()
+    release_user_one_first = asyncio.Event()
+    started_user_one_second = asyncio.Event()
+    started_user_two = asyncio.Event()
+    execution_order: list[str] = []
+    closed_sessions = []
+
+    class FakeSession:
+        async def close(self) -> None:
+            closed_sessions.append(True)
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self.session = FakeSession()
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.pending = [
+                other_user_payload,
+                second_payload,
+                first_payload,
+            ]
+            self.processing = []
+
+        async def brpoplpush(
+            self,
+            source: str,
+            destination: str,
+            timeout: int,
+        ):
+            if not self.pending:
+                await asyncio.sleep(0.01)
+                return None
+
+            raw_job = self.pending.pop()
+            self.processing.insert(0, raw_job)
+            return raw_job
+
+        async def lrem(self, key: str, count: int, value: str) -> int:
+            self.processing.remove(value)
+            return 1
+
+        async def eval(self, *args):
+            raise AssertionError("no active Redis jobs should need requeue")
+
+    fake_redis = FakeRedis()
+
+    async def fake_get_redis_client():
+        return fake_redis
+
+    async def fake_job_handler(bot, job) -> None:
+        execution_order.append(job["session_id"])
+
+        if job["session_id"] == "user-1:first":
+            started_user_one_first.set()
+            await release_user_one_first.wait()
+            return
+
+        if job["session_id"] == "user-1:second":
+            started_user_one_second.set()
+            return
+
+        if job["session_id"] == "user-2:first":
+            started_user_two.set()
+            return
+
+    monkeypatch.setattr(reading_audio_queue, "Bot", FakeBot)
+    monkeypatch.setattr(reading_audio_queue, "get_redis_client", fake_get_redis_client)
+    monkeypatch.setattr(reading_audio_queue, "READING_AUDIO_QUEUE_WORKER_COUNT", 2)
+
+    reading_audio_queue._ensure_redis_audio_generation_worker(fake_job_handler)
+    await asyncio.wait_for(started_user_one_first.wait(), timeout=1)
+    await asyncio.wait_for(started_user_two.wait(), timeout=1)
+
+    assert started_user_one_second.is_set() is False
+    assert execution_order == ["user-1:first", "user-2:first"]
+
+    release_user_one_first.set()
+    await asyncio.wait_for(started_user_one_second.wait(), timeout=1)
+
+    assert execution_order == [
+        "user-1:first",
+        "user-2:first",
+        "user-1:second",
+    ]
+    assert fake_redis.pending == []
+    assert fake_redis.processing == []
+
+    await reading_audio_queue.close_audio_queue(timeout_seconds=1.0)
+    assert closed_sessions == [True, True]
 
 
 @pytest.mark.asyncio
@@ -392,7 +578,7 @@ async def test_close_audio_queue_requeues_active_redis_job_after_timeout(
     assert fake_redis.pending == [payload]
     assert fake_redis.processing == []
     assert fake_redis.requeued == [payload]
-    assert closed_sessions == [True]
+    assert closed_sessions == [True, True]
 
 
 @pytest.mark.asyncio
