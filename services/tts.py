@@ -23,6 +23,7 @@ from services.gemini_client import (
     GeminiFallbackExhaustedError,
     GeminiModelUnavailableError,
     GeminiQuotaExceededError,
+    GeminiTransientError,
 )
 from services.gemini_tts import (
     GEMINI_TTS_CONTINUITY_PROMPT,
@@ -63,6 +64,7 @@ def _is_expected_provider_failure(error: Exception) -> bool:
             GeminiFallbackExhaustedError,
             GeminiModelUnavailableError,
             GeminiQuotaExceededError,
+            GeminiTransientError,
         ),
     )
 
@@ -414,7 +416,8 @@ async def _generate_chunk_voice_for_provider(
 
             if _is_expected_provider_failure(error):
                 logger.warning(
-                    "TTS: provider=%s skipped by quota, chunk=%s/%s, fallback continues",
+                    "TTS: provider=%s failed with expected provider error, "
+                    "chunk=%s/%s, fallback continues",
                     provider,
                     chunk_index,
                     chunks_count,

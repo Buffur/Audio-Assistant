@@ -34,6 +34,10 @@ class GeminiModelUnavailableError(RuntimeError):
     pass
 
 
+class GeminiTransientError(RuntimeError):
+    pass
+
+
 class GeminiFallbackExhaustedError(RuntimeError):
     pass
 
@@ -111,6 +115,29 @@ def _is_model_unavailable_error(error: Exception) -> bool:
             ]
         )
     )
+
+
+def _is_transient_error(error: Exception) -> bool:
+    if isinstance(error, asyncio.TimeoutError):
+        return True
+
+    status_code = _error_status_code(error)
+
+    if status_code in {500, 503, 504}:
+        return True
+
+    error_text = str(error).lower()
+
+    transient_markers = [
+        "internal",
+        "unavailable",
+        "deadline_exceeded",
+        "overloaded",
+        "temporarily",
+        "timeout",
+    ]
+
+    return any(marker in error_text for marker in transient_markers)
 
 
 def normalize_model_chain(
@@ -219,6 +246,11 @@ async def generate_gemini_content(
 
             await asyncio.sleep(_retry_delay(attempt))
 
+    if last_error is not None and _is_transient_error(last_error):
+        raise GeminiTransientError(
+            f"Gemini transient failure context={context} model={model}"
+        ) from last_error
+
     raise RuntimeError(
         f"Gemini request failed context={context} model={model}"
     ) from last_error
@@ -251,6 +283,7 @@ async def generate_gemini_content_with_fallback(
         except (
             GeminiQuotaExceededError,
             GeminiModelUnavailableError,
+            GeminiTransientError,
         ) as error:
             last_fallback_error = error
             logger.warning(

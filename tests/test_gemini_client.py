@@ -20,6 +20,12 @@ class FakeGeminiModels:
         return result
 
 
+class FakeGeminiApiError(RuntimeError):
+    def __init__(self, message: str, *, code: int) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def _fake_client(models):
     return SimpleNamespace(
         aio=SimpleNamespace(
@@ -123,6 +129,37 @@ async def test_generate_gemini_content_raises_after_retry_budget(monkeypatch) ->
     assert len(models.calls) == 2
     assert [metric["success"] for metric in metrics] == [False, False]
     assert metrics[-1]["error"].args == ("second failure",)
+
+
+@pytest.mark.asyncio
+async def test_generate_gemini_content_raises_transient_after_retry_budget(
+    monkeypatch,
+) -> None:
+    models = FakeGeminiModels(
+        [
+            FakeGeminiApiError("500 INTERNAL. Internal error encountered.", code=500),
+            FakeGeminiApiError("500 INTERNAL. Internal error encountered.", code=500),
+        ]
+    )
+
+    async def fake_record_service_metric(**kwargs):
+        return None
+
+    monkeypatch.setattr(gemini_client, "_get_gemini_client", lambda: _fake_client(models))
+    monkeypatch.setattr(gemini_client, "record_service_metric", fake_record_service_metric)
+    monkeypatch.setattr(gemini_client, "GEMINI_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr(gemini_client, "GEMINI_RETRY_BASE_DELAY_SECONDS", 0.001)
+    monkeypatch.setattr(gemini_client, "GEMINI_RETRY_MAX_DELAY_SECONDS", 0.001)
+    monkeypatch.setattr(gemini_client, "GEMINI_REQUEST_TIMEOUT_SECONDS", 1)
+
+    with pytest.raises(gemini_client.GeminiTransientError):
+        await gemini_client.generate_gemini_content(
+            model="gemini-overloaded",
+            contents="prompt",
+            context="tts",
+        )
+
+    assert len(models.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -240,6 +277,39 @@ async def test_generate_gemini_content_with_fallback_tries_next_model_on_model_e
     assert [call["model"] for call in models.calls] == [
         "gemini-old",
         "gemini-new",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_gemini_content_with_fallback_tries_next_model_on_transient(
+    monkeypatch,
+) -> None:
+    models = FakeGeminiModels(
+        [
+            FakeGeminiApiError("500 INTERNAL. Internal error encountered.", code=500),
+            SimpleNamespace(text="ok"),
+        ]
+    )
+
+    async def fake_record_service_metric(**kwargs):
+        return None
+
+    monkeypatch.setattr(gemini_client, "_get_gemini_client", lambda: _fake_client(models))
+    monkeypatch.setattr(gemini_client, "record_service_metric", fake_record_service_metric)
+    monkeypatch.setattr(gemini_client, "GEMINI_RETRY_ATTEMPTS", 1)
+    monkeypatch.setattr(gemini_client, "GEMINI_REQUEST_TIMEOUT_SECONDS", 1)
+
+    response = await gemini_client.generate_gemini_content_with_fallback(
+        primary_model="gemini-primary",
+        fallback_models=["gemini-fallback"],
+        contents="prompt",
+        context="tts",
+    )
+
+    assert response.text == "ok"
+    assert [call["model"] for call in models.calls] == [
+        "gemini-primary",
+        "gemini-fallback",
     ]
 
 
