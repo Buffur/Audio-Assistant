@@ -21,7 +21,8 @@ async def start_handler(message: Message) -> None:
 
     await message.answer(
         START_TEXT,
-        reply_markup=main_keyboard()
+        reply_markup=main_keyboard(),
+        parse_mode="HTML",
     )
 
 
@@ -34,4 +35,4 @@ async def help_handler(message: Message) -> None:
     if await require_private_message_user(message) is None:
         return
 
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, parse_mode="HTML")

@@ -69,7 +69,7 @@ async def get_settings_text(user_id: int) -> str:
 
     return build_settings_text(
         voice_text=voice_text,
-        rate_text=rate_text,
+        rate_text=rate_text
     )
 
 
@@ -88,7 +88,8 @@ async def _safe_edit_settings_message(callback: CallbackQuery, user_id: int) -> 
     try:
         await callback.message.edit_text(
             new_text,
-            reply_markup=settings_keyboard()
+            reply_markup=settings_keyboard(),
+            parse_mode="HTML",
         )
     except Exception:
         logger.exception(
@@ -155,7 +156,7 @@ async def settings_handler(message: Message) -> None:
         return
 
     text = await get_settings_text(user_id)
-    await message.answer(text, reply_markup=settings_keyboard())
+    await message.answer(text, reply_markup=settings_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith(VOICE_CALLBACK_PREFIX))

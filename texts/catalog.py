@@ -3,7 +3,7 @@
 import html
 
 EMPTY_CATALOG_TEXT = (
-    "📭 Каталог порожній.\n\n"
+    "📭 <b>Каталог порожній.</b>\n\n"
     "Надішліть текст, документ, фото або посилання — і після обробки "
     "матеріал зʼявиться в каталозі."
 )
@@ -98,7 +98,7 @@ def build_catalog_text(
     total_items = len(items) if total_items is None else total_items
 
     parts = [
-        "📚 <b>Каталог</b>\n",
+        "📚 <b>Каталог</b>",
         f"Сторінка {page + 1} з {total_pages} · "
         f"показано {len(items)} з {total_items}"
     ]

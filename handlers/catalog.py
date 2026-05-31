@@ -293,9 +293,9 @@ async def catalog_clear_confirm_callback(callback: types.CallbackQuery) -> None:
     await clear_document_history(user_id=user_id)
 
     if callback.message:
-        await callback.message.edit_text(CATALOG_CLEARED_TEXT)
+        await callback.message.edit_text(CATALOG_CLEARED_TEXT, parse_mode="HTML")
 
-    await callback.answer(CATALOG_CLEARED_TEXT)
+    await callback.answer(CATALOG_CLEARED_TEXT, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith(CATALOG_CLEAR_CANCEL_CALLBACK))
@@ -310,9 +310,9 @@ async def catalog_clear_cancel_callback(callback: types.CallbackQuery) -> None:
         return
 
     if callback.message:
-        await callback.message.edit_text(CATALOG_CLEAR_CANCELLED_TEXT)
+        await callback.message.edit_text(CATALOG_CLEAR_CANCELLED_TEXT, parse_mode="HTML")
 
-    await callback.answer(CATALOG_CLEAR_CANCELLED_TEXT)
+    await callback.answer(CATALOG_CLEAR_CANCELLED_TEXT, parse_mode="HTML")
 
 
 @router.message(Command("catalog_help"))
